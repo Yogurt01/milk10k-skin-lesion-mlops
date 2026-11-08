@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "milk10k-serving"
+version = "0.1.0"
+description = "Torch-free ONNX Runtime serving of the MILK10k final-P1a-kg model (research use only, not a medical device)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Code: see the repository README; model package: CC BY-NC 4.0 (MILK study team), non-commercial" }
+# Exact pins live in requirements.txt (compiled from requirements.in); these are the import-level requirements.
+dependencies = ["numpy", "onnxruntime", "opencv-python-headless"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

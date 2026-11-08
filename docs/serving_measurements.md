@@ -113,18 +113,21 @@ One member (seed 42, fold 0) wrapped with the same softmax/sigmoid as `inference
 | Max abs diff vs PyTorch fp32, 6 sample lesions (incl. missing clinical) | 7.2e-7 (classes), 8.5e-7 (binary); top-1 identical |
 | 1 member, 1 lesion, 12 / 4 / 2 threads: ONNX Runtime | 26 / 39 / 68 ms |
 | Same, PyTorch in the same run | 47 / 94 / 82 ms (the earlier PyTorch run gave 56 / 56 / 75 ms) |
-| Estimated 15 members, 4 threads (15 × 1 member) | ≈ 0.6 s (not measured end to end) |
+| Full ensemble end to end (decode + preprocessing + 15 members), 1 lesion, 4 threads, torch-free process | 0.70 s (median of 7; notebook 08: 0.61–0.70 s) |
+| Same with ONNX Runtime's default thread spinning | 1.58 s: idle worker threads of the previous session compete with the next; `milk10k_serving` turns spinning off |
 | RSS of a process **without torch**: after `import onnxruntime` / 15 sessions / after one run each | 44 / 1,854 / 1,859 MiB |
+| RSS of the `milk10k_serving` predictor (15 sessions + OpenCV), after inference | ≈ 2.0 GiB |
 
-A torch-free serving image would need the preprocessing (albumentations + OpenCV transforms and the tabular
-encoding in `milk10k.dataset`) without torch tensors, and a full-ensemble parity check against the reference.
+The torch-free preprocessing in `milk10k_serving` (OpenCV + NumPy) is bit-identical to the release transforms,
+and the full ONNX ensemble matches the reference within 2.55e-4 on the 3 intact sample lesions
+(`notebooks/08_export_for_deployment.ipynb`, decision P1-DEC-05).
 
 ## 6. What it means for serving (input to P1-DEC-05)
 
 | Option | OOF score | RAM per replica | CPU latency, 1 lesion, 4 threads | Parity vs stored reference | 3 replicas |
 |---|---:|---:|---:|---|---:|
 | A. Full 15, PyTorch CPU | 0.6505 | ≈ 2.4 GiB | 0.82 s | yes (2.5e-4) | ≈ 7.2 GiB |
-| B. Full 15, ONNX Runtime CPU | 0.6505 | ≈ 1.9 GiB | ≈ 0.6 s (est.) | expected (member diff 8.5e-7); to verify on 15 | ≈ 5.6 GiB |
+| B. Full 15, ONNX Runtime CPU (**chosen**, P1-DEC-05) | 0.6505 | ≈ 2.0 GiB | 0.70 s (measured in M4) | yes (2.55e-4, full ONNX path) | ≈ 6.0 GiB |
 | C. 2 seeds (10), PyTorch CPU | 0.6466–0.6476 | ≈ 1.9 GiB (est.) | ≈ 0.55 s (est.) | no: new reference needed | ≈ 5.7 GiB |
 | D. 1 seed (5), PyTorch CPU | 0.6204–0.6446 | ≈ 1.4 GiB (est.) | ≈ 0.28 s (est.) | no: new reference needed | ≈ 4.2 GiB |
 | E. Full 15 + TTA4, PyTorch CPU | 0.6555 (gain unconfirmed) | ≈ 2.4 GiB | 3.31 s | yes vs `-tta.csv` (1.4e-4) | ≈ 7.2 GiB |
@@ -138,14 +141,15 @@ applications are closed, the parts run separately (hardware budget, P1-CON-05), 
 ## How to reproduce
 
 Run from the repository root, with `MILK10K_DATA_DIR` pointing at the prepared dataset and the 15 checkpoints in
-`training/models/final-P1a-kg/`:
+`training/models/final-P1a-kg/` (`make bench` runs all four):
 
 ```bash
-training/.venv/bin/python <scripts>/measure.py cpu      # §1–3, CPU
-training/.venv/bin/python <scripts>/measure.py cuda     # §1–3, GPU
-training/.venv/bin/python <scripts>/variants.py         # §4
-PYTHONPATH=training/src <export-venv>/bin/python <scripts>/export.py   # §5
+training/.venv/bin/python benchmarks/serving/measure.py cpu      # §1–3, CPU
+training/.venv/bin/python benchmarks/serving/measure.py cuda     # §1–3, GPU
+training/.venv/bin/python benchmarks/serving/variants.py         # §4
+notebooks/.venv/bin/python benchmarks/serving/export.py          # §5 (venv: make setup-notebooks)
 ```
 
-The scripts are not yet in the repository (P1-SET-09 proposes `benchmarks/serving/`); each writes a JSON file with
-every number in this document.
+Each script writes a JSON file with every number in this document to `benchmarks/serving/out/` (gitignored). The
+end-to-end ONNX latency in §5 comes from notebook 08 and the `milk10k_serving` predictor. A re-run on 2026-11-09
+reproduced the figures above (CPU ensemble 0.784 s vs 0.783 s; parity, OOF and RSS unchanged).

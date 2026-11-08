@@ -1,0 +1,8 @@
+# Environment for notebooks/08_export_for_deployment.ipynb and benchmarks/serving/export.py:
+# the release pins (torch, milk10k dependencies, ipykernel/nbclient) + ONNX export tools + nbconvert.
+# Setup (from the repository root): make setup-notebooks
+-r ../training/requirements.txt
+onnx==1.23.2
+onnxscript==0.7.2
+onnxruntime==1.31.1
+nbconvert==7.17.2
