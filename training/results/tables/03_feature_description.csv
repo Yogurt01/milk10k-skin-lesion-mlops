@@ -1,0 +1,5 @@
+feature,missing_pct,summary
+age_approx,0.38,AUC of raw age for malignancy = 0.672
+sex,0.0,malignant rate 0.62-0.68 across 2 categories (incl. missing)
+anatomical_site_general,0.59,malignant rate 0.12-0.87 across 8 categories (incl. missing)
+fitzpatrick_type,0.0,malignant rate 0.17-0.70 across 6 categories (incl. missing)

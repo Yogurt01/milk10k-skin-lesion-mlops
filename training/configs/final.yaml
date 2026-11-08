@@ -1,0 +1,48 @@
+# final-P1a-kg: the released model (pooled OOF score 0.6505).
+# Values mirror the "args" stored in every released checkpoint (verified by models/final-P1a-kg/manifest.json).
+name: final-P1a-kg
+
+paths:                                   # relative to the release root; see milk10k.config
+  data_dir: data/raw                     # prepared layout; override with env MILK10K_DATA_DIR
+  source_dir: data/raw/_source           # the six ISIC release files (data/README.md)
+  folds: data/folds.csv                  # fixed 5-fold assignment; never regenerate
+  checkpoint_dir: models/final-P1a-kg
+  results_dir: results
+  sample_dir: sample
+
+recipe:                                  # one training run = one seed x 5 folds
+  backbone: resnet18.a1_in1k             # timm name, used for BOTH image streams
+  pretrained: true                       # ImageNet-1k init from Hugging Face (MODEL_CARD.md); needs network once
+  d: 256                                 # fusion width
+  img_size: 288                          # derm: square resize (1.333x anisotropy on 600x450); clinical: letterbox
+  batch_size: 32
+  num_workers: 4
+  epochs: 10                             # best epoch per fold selected on the validation fold
+  lr: 3.0e-4                             # backbone LR (AdamW)
+  head_lr_multiplier: 10                 # fixed in code: heads/fusion/tabular at 3e-3
+  weight_decay: 0.05
+  warmup_frac: 0.05                      # fixed in code: linear warmup then cosine to 0
+  focal_gamma: 2.0                       # 11-class focal loss; plus BCE on the binary head
+  mel_weight: 1.0                        # MEL weighting of the binary loss off (P3b-mel was dropped)
+  xattn_layers: 0                        # spatial cross-attention off (P4a was dropped)
+  amp_dtype: fp16                        # Kaggle T4 has no native bf16
+  clinical_dropout: 0.15                 # fixed in code: training-time missing-clinical simulation
+  sampler: sqrt_balanced                 # fixed in code: weight ~ class_freq^-0.5
+
+ensemble:
+  run_prefix: P1a-kg
+  seeds: [42, 43, 44]
+  folds: [0, 1, 2, 3, 4]
+  combine: equal_mean                    # mean of 15 models, then class renormalisation
+  oof: held_out_seed_mean                # OOF of a lesion = mean of its 3 held-out (fold) models
+
+inference:
+  tta: false                             # true = 4 flip views (final-P1a-kg-tta); incremental gain unconfirmed
+  device: auto                           # cuda if available, else cpu
+  amp: true                              # fp16 autocast on cuda only
+  parity_tolerance: 0.002                # max |difference| vs results/predictions/; README "Environments and parity"
+
+metric:
+  min_tpr: 0.80
+  weights: {pauc80_norm: 0.7, macro_auc_11: 0.3, fair_gap: -0.1}
+  fairness_groups: {"1-2": [1, 2], "3-4": [3, 4], "5-6": [5, 6]}   # numeric codes; naming unverified

@@ -1,0 +1,9 @@
+,computed,logged,match
+malignant lesions,3454,3454,True
+final hard,690,690,True
+"final hard, hard in all 3 seeds",427,427,True
+"final hard, hard in >=2 seeds",621,621,True
+union of the 3 seed tails,1000,1000,True
+hard in exactly 1 seed,357,357,True
+hard in exactly 2 seeds,216,216,True
+hard in exactly 3 seeds,427,427,True

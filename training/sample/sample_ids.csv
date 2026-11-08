@@ -1,0 +1,7 @@
+isic_id,scenario
+ISIC_0145429,intact
+ISIC_0150253,intact
+ISIC_0168990,intact
+ISIC_0208181,clinical_blank
+ISIC_0241487,clinical_nan
+ISIC_0243690,clinical_missing_file

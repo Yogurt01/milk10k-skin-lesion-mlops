@@ -1,0 +1,17 @@
+value,feature,lesions,malignant_rate
+female,sex,2088,0.621
+male,sex,3152,0.685
+foot,anatomical_site_general,23,0.87
+hand,anatomical_site_general,72,0.681
+head/neck,anatomical_site_general,1491,0.683
+lower extremity,anatomical_site_general,1023,0.639
+missing,anatomical_site_general,31,0.323
+oral/genital,anatomical_site_general,8,0.125
+trunk,anatomical_site_general,1925,0.64
+upper extremity,anatomical_site_general,667,0.705
+1,fitzpatrick_type,6,0.167
+2,fitzpatrick_type,105,0.352
+3,fitzpatrick_type,506,0.407
+4,fitzpatrick_type,3174,0.701
+5,fitzpatrick_type,1066,0.676
+6,fitzpatrick_type,383,0.689

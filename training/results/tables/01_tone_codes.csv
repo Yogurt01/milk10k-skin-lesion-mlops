@@ -1,0 +1,4 @@
+fitzpatrick_type,benign,malignant,eligible_for_fairgap
+codes 1-2,73,38,True
+codes 3-4,1249,2431,True
+codes 5-6,464,985,True

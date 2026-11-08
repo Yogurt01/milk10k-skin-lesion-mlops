@@ -1,0 +1,33 @@
+# MILK10k release environment: Python 3.12.
+#
+# PINNED TO THE LOCAL ENVIRONMENT (torch 2.14.0, RTX 3050 / CUDA 13.0 wheels), NOT to the Kaggle
+# training environment. Reason: these are the versions the notebooks are executed and checked with
+# (the same versions as the development environment). The released checkpoints were trained on Kaggle T4 with
+# Python 3.12.13, torch 2.10.0+cu128, timm 1.0.30, albumentations 2.0.8, albucore 0.0.24,
+# numpy 2.0.2, pandas 2.3.3, scikit-learn 1.6.1 (models/final-P1a-kg/manifest.json, MODEL_CARD.md).
+# The reference predictions in results/predictions/ were produced with Python 3.13.15, torch 2.11.0+cu128.
+# A different torch/GPU changes fp16 numerics slightly, so notebook 07 compares predictions with a
+# tolerance (configs/final.yaml inference.parity_tolerance), not bit-exactly. See README "Environments and parity".
+#
+# PyPI's Linux torch wheels are CUDA builds; on other platforms install torch/torchvision first from
+# https://pytorch.org/get-started/locally/ with the same versions.
+torch==2.14.0
+torchvision==0.29.0
+timm==1.0.30
+albumentations==2.0.8
+albucore==0.0.24
+opencv-python-headless==5.0.0.93
+numpy==2.5.3
+pandas==3.0.6
+scikit-learn==1.9.1
+scipy==1.18.1
+matplotlib==3.11.2
+PyYAML==6.0.3
+tqdm==4.70.1
+pillow==12.3.0
+huggingface-hub==2.0.0
+safetensors==0.8.0
+# notebooks (nbformat/nbclient: versions resolved by `uv run --with` for the static checks)
+ipykernel==7.3.0
+nbformat==5.11.1
+nbclient==0.11.0

@@ -1,0 +1,90 @@
+# --- Local only: never pushed ---
+private/
+CLAUDE.md
+
+# --- Data (MILK10k, CC BY-NC 4.0: never committed) ---
+/data/
+**/data/raw/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.parquet
+
+# --- Images: lesion images must never be committed ---
+# Allowed: README screenshots in docs/images/ and the release's plot figures.
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.gif
+*.tif
+*.tiff
+*.webp
+*.dcm
+!docs/images/**
+!training/results/figures/**
+
+# --- Model checkpoints and exported models (share via the chosen storage, not git) ---
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.safetensors
+*.pkl
+*.joblib
+*.h5
+/models/
+/artifacts/
+
+# --- Python environments and caches ---
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- Secrets and credentials ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*.json
+*service-account*.json
+*-sa-key*.json
+kubeconfig*
+.kube/
+
+# --- Outputs ---
+reports/
+outputs/
+logs/
+*.log
+mlruns/
+jenkins_home/
+
+# --- Terraform ---
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+crash.log
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

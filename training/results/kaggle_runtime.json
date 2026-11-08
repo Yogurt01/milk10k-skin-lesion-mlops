@@ -1,0 +1,117 @@
+{
+ "training_runs": [
+  {
+   "name": "P1a-kg-s42",
+   "seed": 42,
+   "extra": [],
+   "returncode": 0,
+   "minutes": 39.6
+  },
+  {
+   "name": "P1a-kg-s43",
+   "seed": 43,
+   "extra": [],
+   "returncode": 0,
+   "minutes": 40.3
+  },
+  {
+   "name": "P1a-kg-s44",
+   "seed": 44,
+   "extra": [],
+   "returncode": 0,
+   "minutes": 40.5
+  }
+ ],
+ "training_env": {
+  "python": "3.12.13",
+  "torch": "2.10.0+cu128",
+  "cuda": "12.8",
+  "cudnn": 91002,
+  "gpus": [
+   "Tesla T4",
+   "Tesla T4"
+  ],
+  "bf16_native": false,
+  "bf16_supported_torch_default": true,
+  "cpu_count": 4,
+  "cpu_affinity": 4,
+  "ram_gb": 31.3,
+  "internet": false,
+  "preinstalled": {
+   "albumentations": "2.0.8",
+   "albucore": "0.0.24",
+   "timm": "1.0.26",
+   "opencv-python": "4.13.0.92",
+   "opencv-python-headless": "4.13.0.92",
+   "numpy": "2.0.2",
+   "pandas": "2.3.3",
+   "scikit-learn": "1.6.1",
+   "pydantic": "2.12.3"
+  },
+  "git_commit": "5d52458d2d956cb7acba4c9e0d4b4862bc516699",
+  "paths": {
+   "code": "/kaggle/input/datasets/bnnguynhu/milk10k-code",
+   "data": "/kaggle/input/datasets/bnnguynhu/milk10k-data/raw",
+   "folds": "/kaggle/input/datasets/bnnguynhu/milk10k-data/folds/folds.csv",
+   "hub": "/kaggle/input/datasets/bnnguynhu/milk10k-data/hf/hub",
+   "wheels": "/kaggle/input/datasets/bnnguynhu/milk10k-code/wheels"
+  }
+ },
+ "reference_inference": {
+  "minutes": 6.077199181500001,
+  "peak_cuda_gb": 0.5025043487548828,
+  "test_models": 15,
+  "oof_models_per_lesion": 3,
+  "strict_reproduction": "passed"
+ },
+ "reference_inference_env": {
+  "python": "3.13.15",
+  "torch": "2.11.0+cu128",
+  "cuda": "12.8",
+  "cudnn": 91900,
+  "gpus": [
+   "Tesla T4"
+  ],
+  "bf16_native": false,
+  "bf16_supported_torch_default": true,
+  "cpu_count": 4,
+  "cpu_affinity": 4,
+  "ram_gb": 31.3,
+  "internet": false,
+  "preinstalled": {
+   "albumentations": "2.0.8",
+   "albucore": "0.0.24",
+   "timm": "1.0.29",
+   "opencv-python": "4.14.0.94",
+   "opencv-python-headless": "4.14.0.94",
+   "numpy": "2.1.3",
+   "pandas": "2.3.3",
+   "scikit-learn": "1.6.1",
+   "pydantic": "2.13.5"
+  },
+  "git_commit": "baa27084547ffa45a25a2e4506acd0a478a73f94",
+  "paths": {
+   "code": "/kaggle/input/datasets/bnnguynhu/milk10k-code",
+   "data": "/kaggle/input/datasets/bnnguynhu/milk10k-data/raw",
+   "folds": "/kaggle/input/datasets/bnnguynhu/milk10k-data/folds/folds.csv",
+   "hub": "/kaggle/input/datasets/bnnguynhu/milk10k-data/hf/hub",
+   "wheels": "/kaggle/input/datasets/bnnguynhu/milk10k-code/wheels"
+  }
+ },
+ "noiseoff_runs": [
+  {
+   "name": "P1a-kg-noiseoff-s42",
+   "seed": 42,
+   "extra": [],
+   "returncode": 0,
+   "minutes": 38.2
+  },
+  {
+   "name": "P1a-kg-noiseoff-s43",
+   "seed": 43,
+   "extra": [],
+   "returncode": 0,
+   "minutes": 35.2
+  }
+ ]
+}

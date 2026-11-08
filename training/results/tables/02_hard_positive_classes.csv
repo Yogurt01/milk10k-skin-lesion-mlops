@@ -1,0 +1,5 @@
+,malignant,final_hard,hard_in_all_3_seeds,hard_rate
+MEL,450,295,216,0.656
+BCC,2522,285,154,0.113
+SCCKA,473,104,53,0.22
+MAL_OTH,9,6,4,0.667

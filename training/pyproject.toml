@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "milk10k"
+version = "1.0.0"
+description = "MILK10k multi-modal skin-lesion model (final-P1a-kg): research use only, not a medical device"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Code: see README; data and derived weights: CC BY-NC 4.0 terms of the ISIC MILK10k release" }
+# Exact pins live in requirements.txt (install that first); these are the import-level requirements.
+dependencies = ["torch", "torchvision", "timm", "albumentations", "opencv-python-headless", "numpy", "pandas",
+                "scikit-learn", "matplotlib", "PyYAML", "tqdm", "pillow"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,12 @@
+diagnostic_class_11,lesions,share_pct,malignant
+BCC,2522,48.13,True
+NV,746,14.24,False
+BKL,544,10.38,False
+SCCKA,473,9.03,True
+MEL,450,8.59,True
+AKIEC,303,5.78,False
+DF,52,0.99,False
+INF,50,0.95,False
+VASC,47,0.9,False
+BEN_OTH,44,0.84,False
+MAL_OTH,9,0.17,True

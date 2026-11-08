@@ -1,0 +1,16 @@
+# Data: MILK10k images and metadata are never committed (licence + size); get them via data/README.md
+data/raw/
+# Checkpoints (~1.43 GB): track models/final-P1a-kg/manifest.json only; use DVC / Git LFS downstream
+*.pth
+models/final-P1a-kg/_download/
+models/retrain/
+# Sample images and their metadata are rebuilt by sample/make_sample.py from the local dataset
+sample/images/
+sample/sample_metadata.csv
+# Demo-training scratch output (notebook 04)
+results/demo_training/
+# Environments and caches
+.venv/
+__pycache__/
+*.egg-info/
+.ipynb_checkpoints/

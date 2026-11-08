@@ -1,0 +1,45 @@
+{
+ "description": "Fixed tabular encoding shared by every fold and seed (milk10k.dataset.encode_tabular). Nothing is fitted, so there is no per-fold preprocessor to store.",
+ "site": {
+  "vocabulary": [
+   "head/neck",
+   "upper extremity",
+   "lower extremity",
+   "anterior torso",
+   "posterior torso",
+   "lateral torso",
+   "palms/soles",
+   "oral/genital",
+   "trunk",
+   "hand",
+   "foot"
+  ],
+  "index": "1 + position in vocabulary; 0 = missing or unseen"
+ },
+ "sex": {
+  "male": 1,
+  "female": 2,
+  "other_or_missing": 0
+ },
+ "fitzpatrick_type": {
+  "values": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   6
+  ],
+  "missing": 0,
+  "note": "skin_tone_class + 1; direction of the source coding unverified"
+ },
+ "age": {
+  "transform": "age_approx / 100",
+  "missing": "0 plus age_missing = 1"
+ },
+ "embedding_sizes": {
+  "site": 12,
+  "sex": 3,
+  "fitzpatrick_type": 7
+ }
+}

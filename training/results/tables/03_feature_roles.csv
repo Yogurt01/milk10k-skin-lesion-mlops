@@ -1,0 +1,14 @@
+column,role,reason
+isic_id,excluded,"identifier; it says which image a row is, not what the lesion looks like"
+lesion_id,excluded,identifier; grouping only
+patient_id,excluded,identifier; equals lesion_id in this release; grouping only
+derm_image_path,image input,dermoscopic image stream
+clinical_image_path,image input,clinical image stream; blank = missing
+clinical_available,mask (not a tabular feature),selects the learned [NULL] token
+age_approx,USED,age/100 plus an age_missing flag
+sex,USED,embedding: male / female / missing
+anatomical_site_general,USED,embedding over SITES; unseen or missing = 0
+fitzpatrick_type,USED,embedding over codes 1-6; missing = 0
+diagnosis_confirm_type,excluded,"training-only column, absent at test time"
+diagnostic_class_11,label,11-class target
+target_binary,label,binary target
