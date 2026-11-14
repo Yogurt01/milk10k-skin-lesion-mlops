@@ -138,6 +138,73 @@ the runs (≈ 10 GiB), three full-ensemble replicas plus the monitoring stack do
 applications are closed, the parts run separately (hardware budget, P1-CON-05), or memory is shared across replicas
 (not yet measured).
 
+## 7. Concurrency through the API (P1-API-05, 2026-11-14)
+
+Real model package through real HTTP (`make serve`, one uvicorn worker, `ORT_INTRA_OP_THREADS=4`), measured with
+`benchmarks/serving/concurrency.py`: 24 `POST /predict` per level (after 2 warm-up requests), the 3 intact sample
+lesions cycled, `c` requests in flight at a time. During each level `GET /health` is polled every 50 ms and the
+server's RSS (VmRSS of the uvicorn process) is sampled.
+
+- **Machine:** Intel Core i5-12500H, 12 cores / 16 logical CPUs, 15,198 MiB RAM.
+- **Load:** other processes used ~9.5–12 GiB, with 2.9–3.1 GiB available during the runs.
+- **Noise:** the same effective concurrency gave different throughput across runs (c = 2, unlimited: 2.28 req/s; limit 2 with c = 4 or 5: 1.87–1.91 req/s), so the numbers are indicative.
+
+**A. Limiter not binding** (`MAX_CONCURRENT_PREDICTIONS=8`, `MAX_QUEUED_PREDICTIONS=32`): what `c` parallel inferences cost.
+
+| c | Status | p50 | p95 | Throughput | `/health` p50 / max | Server RSS max |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | 24 × 200 | 0.57 s | 0.68 s | 1.72 req/s | 3.0 / 5.7 ms | 2,472 MiB |
+| 2 | 24 × 200 | 0.86 s | 1.00 s | 2.28 req/s | 3.1 / 6.2 ms | 2,472 MiB |
+| 4 | 24 × 200 | 1.32 s | 1.73 s | 2.85 req/s | 3.1 / 6.4 ms | 2,493 MiB |
+
+**B. Defaults** (`MAX_CONCURRENT_PREDICTIONS=2`, `MAX_QUEUED_PREDICTIONS=8`): requests beyond 2 wait in the queue.
+
+| c | Status | p50 | p95 | Throughput | `/health` p50 / max | Server RSS max |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | 24 × 200 | 0.58 s | 0.62 s | 1.71 req/s | 3.1 / 5.6 ms | 2,021 MiB |
+| 2 | 24 × 200 | 1.10 s | 1.14 s | 1.81 req/s | 3.2 / 8.2 ms | 2,190 MiB |
+| 4 | 24 × 200 | 2.11 s | 2.24 s | 1.87 req/s | 3.2 / 6.8 ms | 2,190 MiB |
+| 5 | 24 × 200 | 2.13 s | 3.17 s | 1.91 req/s | 3.2 / 7.1 ms | 2,191 MiB |
+
+**Overload (defaults):** 15 parallel requests gave:
+- 10 × 200 (2 running + 8 queued); the slowest took 5.02 s.
+- 5 × 503 with `Retry-After: 1`, each within 0.03–0.05 s.
+- During the overload `/ready` stayed 200 and `/health` answered in 3.2 ms.
+
+**Before the change** (project review, fake predictor sleeping 2 s, 60 parallel requests):
+- At most 40 predictions ran at once, the size of anyio's default threadpool.
+- The sync `/health` waited behind them for 1,879 ms.
+- With 40 blocked predictions, the regression test measured 9,624 ms when `/health` was made sync again.
+
+**Choice of `MAX_CONCURRENT_PREDICTIONS=2`:**
+- Each running prediction uses 4 intra-op threads, so 2 running use 8 of the 16 logical CPUs. That leaves CPUs for the event loop and the rest of the stack (monitoring, Jenkins), or for other replicas on the same node.
+- 4 running use all 16. In run A that gained ~25% throughput over 2 (2.85 vs 2.28 req/s), at a p95 of 1.73 s instead of 1.00 s.
+- The queue of 8 keeps the worst accepted wait to a few seconds: the slowest of 10 parallel requests took 5.02 s.
+- Each queued request already holds its parsed upload. At most 2 images × `MAX_UPLOAD_MB` (10 MB) each, so 160 MB for 8 waiting requests: an upper bound from the limits, not measured.
+- Both values are settings, so a deployment with more CPUs or one replica per node can raise them.
+
+## 8. Decoded image size (P1-API-09, 2026-11-14)
+
+The upload limit (`MAX_UPLOAD_MB`) bounds the compressed size only. A small PNG can declare huge dimensions.
+
+OpenCV 5.0.0 (`opencv-python-headless` 5.0.0.93):
+- **When the cap is read:** OpenCV reads `OPENCV_IO_MAX_IMAGE_PIXELS` once, when `cv2` is imported. Set after the import, it had no effect.
+- **What happens above the cap:** `cv2.imdecode` *raises* `cv2.error` (`validateInputImageSize`) instead of returning `None`, before allocating the image.
+- **Exact default cap:** not measured. A 400 M-pixel image decoded and a 1.2 G-pixel image was rejected **[verify]**.
+
+`milk10k_serving.preprocess` now sets the variable before importing `cv2` (default 25,000,000 pixels). Every MILK10k
+image is at most 600 × 450 = 270,000 pixels (`training/results/tables/01_image_sizes.csv`, 11,438 images).
+`ImageTooLarge` maps to a 422 for either image.
+
+| Image (black RGB PNG) | File size | Cap | Result | Decode time | Peak RSS of the process |
+|---|---:|---|---|---:|---|
+| 20000 × 20000 | 1.17 MB | OpenCV default | decoded (1.2 GB array) | 1.96 s | 47 → 2,338 MiB |
+| 40000 × 30000 | 3.50 MB | OpenCV default | `cv2.error` raised (an uncaught error: generic 500 in the API before this change) | — | — |
+| 20000 × 20000 | 1.17 MB | env set *after* `import cv2` | decoded: the setting was ignored | 1.52 s | 47 → 2,338 MiB |
+| 5000 × 5000 | 73 kB | 25,000,000 | decoded | 0.141 s | 47 → 193 MiB |
+| 5001 × 5000 | 73 kB | 25,000,000 | rejected (`ImageTooLarge`) | < 0.001 s | 47 → 50 MiB |
+| 20000 × 20000 / 40000 × 30000 | 1.17 / 3.50 MB | 25,000,000 | rejected | ≤ 0.002 s | +3 / +5 MiB |
+
 ## How to reproduce
 
 Run from the repository root, with `MILK10K_DATA_DIR` pointing at the prepared dataset and the 15 checkpoints in
@@ -149,6 +216,11 @@ training/.venv/bin/python benchmarks/serving/measure.py cuda     # §1–3, GPU
 training/.venv/bin/python benchmarks/serving/variants.py         # §4
 notebooks/.venv/bin/python benchmarks/serving/export.py          # §5 (venv: make setup-notebooks)
 ```
+
+§7 needs a running server (`make serve`, settings from the environment) and the sample lesions:
+`serving/.venv/bin/python benchmarks/serving/concurrency.py --pid <uvicorn pid> --levels 1 2 4 5 --label default`
+(writes `benchmarks/serving/out/concurrency_<label>.json`). §8 used temporary scripts outside the repository; the
+behaviour is covered by `tests/test_preprocess.py` and `tests/test_api.py`.
 
 Each script writes a JSON file with every number in this document to `benchmarks/serving/out/` (gitignored). The
 end-to-end ONNX latency in §5 comes from notebook 08 and the `milk10k_serving` predictor. A re-run on 2026-11-09
