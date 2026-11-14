@@ -8,6 +8,8 @@ certifi==2026.10.23
     # via
     #   httpcore
     #   httpx
+coverage==7.17.3
+    # via pytest-cov
 h11==0.16.0
     # via
     #   -c requirements.txt
@@ -28,10 +30,16 @@ packaging==26.3
     #   -c requirements.txt
     #   pytest
 pluggy==1.7.0
-    # via pytest
+    # via
+    #   pytest
+    #   pytest-cov
 pygments==2.21.0
     # via pytest
 pytest==9.2.0
+    # via
+    #   -r requirements-dev.in
+    #   pytest-cov
+pytest-cov==7.1.0
     # via -r requirements-dev.in
 ruff==0.17.4
     # via -r requirements-dev.in

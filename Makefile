@@ -5,8 +5,9 @@ SHELL := /bin/bash
 SERVING_PY := serving/.venv/bin/python
 NOTEBOOK_PY := notebooks/.venv/bin/python
 PYTEST_FAST := -m "not parity and not slow"
+COV_MIN ?= 90
 
-.PHONY: help setup setup-notebooks test test-all lint format hygiene serve export bench up down k8s-deploy tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report lint format hygiene serve export bench up down k8s-deploy tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -25,6 +26,10 @@ test: ## Fast tests (no model package needed)
 
 test-all: ## All tests, incl. parity against the reference (needs the model package and sample lesions)
 	$(SERVING_PY) -m pytest
+
+test-report: ## Fast tests + JUnit XML and coverage XML in reports/ (fails below COV_MIN % coverage)
+	$(SERVING_PY) -m pytest $(PYTEST_FAST) --junit-xml=reports/junit.xml \
+		--cov=milk10k_serving --cov-report=xml:reports/coverage.xml --cov-report=term --cov-fail-under=$(COV_MIN)
 
 lint: ## Ruff lint + format check
 	$(SERVING_PY) -m ruff check .

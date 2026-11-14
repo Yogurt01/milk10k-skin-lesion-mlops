@@ -1,5 +1,6 @@
 # Development tools for the serving code. Compile: uv pip compile requirements-dev.in -o requirements-dev.txt --python-version 3.12
 -c requirements.txt
 pytest
+pytest-cov  # coverage XML report + threshold (P1-TST-07)
 ruff
 httpx  # FastAPI TestClient
