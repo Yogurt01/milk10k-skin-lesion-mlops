@@ -10,7 +10,12 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Code: see the repository README; model package: CC BY-NC 4.0 (MILK study team), non-commercial" }
 # Exact pins live in requirements.txt (compiled from requirements.in); these are the import-level requirements.
+# Core (preprocessing + ONNX Runtime predictor):
 dependencies = ["numpy", "onnxruntime", "opencv-python-headless"]
+
+[project.optional-dependencies]
+# The FastAPI service (`milk10k_serving.api`) and its ASGI server: pip install -e "serving[api]"
+api = ["fastapi", "pydantic", "python-multipart", "uvicorn"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
