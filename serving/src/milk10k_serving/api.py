@@ -7,7 +7,9 @@ Run from the repository root (settings come from environment variables, see `set
 Loading: the lifespan hook starts the model load in a background thread and returns at once, so uvicorn accepts
 connections immediately. Uvicorn does not accept connections until lifespan startup finishes, so a blocking load there
 would make `/ready` unreachable (connection refused) instead of answering 503. `/health` is always 200; `/ready` is
-503 while loading or after a failed load (with the error) and 200 once the predictor is ready.
+503 while loading or after a failed load (with the error) and 200 once the predictor is ready. The error shown to
+clients has absolute paths redacted (`<MODEL_DIR>/file`, other paths reduced to their file name); the full message
+and traceback go to the server log.
 
 Status contract of `POST /predict`: 200 ok; 422 missing or invalid field, or missing / undecodable dermoscopic image
 (decision P1-DEC-09); 413 oversized upload (`MAX_UPLOAD_MB`); 503 model not ready; 400 body that is not parseable
@@ -15,10 +17,12 @@ multipart; 500 generic message for unexpected errors (no stack trace in the resp
 """
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -66,7 +70,10 @@ class ReadyResponse(BaseModel):
     model: str | None = None
     model_version: str | None = None
     load_seconds: float | None = None
-    error: str | None = Field(default=None, description="Why loading failed (e.g. a sha256 mismatch).")
+    error: str | None = Field(
+        default=None,
+        description="Why loading failed: error type and message (e.g. a sha256 mismatch), absolute paths redacted.",
+    )
 
 
 class ErrorResponse(BaseModel):
@@ -89,11 +96,35 @@ PREDICT_RESPONSES: dict[int | str, dict[str, Any]] = {
 
 
 # --------------------------------------------------------------------------------------------------------------------
+# Load errors as shown to clients: no absolute server paths
+# --------------------------------------------------------------------------------------------------------------------
+# An absolute POSIX path: "/" not preceded by a word character, ".", ":", "/" or "<" (so "head/neck", "1/2", URLs and
+# the "<MODEL_DIR>/" placeholder are left alone), followed by characters that do not end a path in a message.
+_ABSOLUTE_PATH = re.compile(r"(?<![\w.:/<>-])/[^\s'\"`,;:()\[\]{}<>]+")
+
+
+def redact_paths(message: str, model_dir: Path | None = None) -> str:
+    """`message` without absolute paths: MODEL_DIR (as configured and resolved) -> `<MODEL_DIR>`, any other absolute
+    path -> `<path>/<file name>`. File names and the rest of the text (e.g. a sha256 mismatch) are kept."""
+    if model_dir is not None:
+        forms = {str(model_dir), str(Path(model_dir).resolve())}
+        for form in sorted((f.rstrip("/") for f in forms if "/" in f), key=len, reverse=True):
+            message = message.replace(form, "<MODEL_DIR>")
+
+    def file_name(match: re.Match) -> str:
+        name = match.group(0).rstrip("/").rsplit("/", 1)[-1]
+        return f"<path>/{name}" if name else "<path>"
+
+    return _ABSOLUTE_PATH.sub(file_name, message)
+
+
+# --------------------------------------------------------------------------------------------------------------------
 # Model state: loaded once, in a background thread started from the lifespan hook
 # --------------------------------------------------------------------------------------------------------------------
 class ModelState:
-    def __init__(self, loader: Callable[[], Predictor]):
+    def __init__(self, loader: Callable[[], Predictor], model_dir: Path | None = None):
         self._loader = loader
+        self._model_dir = model_dir  # only used to redact it from the error shown to clients
         self._lock = threading.Lock()
         self._done = threading.Event()
         self._thread: threading.Thread | None = None
@@ -119,10 +150,11 @@ class ModelState:
         try:
             predictor = self._loader()
         except Exception as exc:  # any load failure is reported by /ready, never raised into the server
+            detail = f"{type(exc).__name__}: {exc}"
             with self._lock:
-                self.error = f"{type(exc).__name__}: {exc}"
+                self.error = redact_paths(detail, self._model_dir)
                 self.status = "failed"
-            logger.error("model failed to load: %s", self.error)
+            logger.error("model failed to load: %s", detail, exc_info=True)  # full detail stays server-side
             self._done.set()
             return
         with self._lock:
@@ -310,7 +342,7 @@ def _add_vocabulary(schema: dict, spec: PreprocessSpec) -> None:
 def create_app(settings: Settings | None = None, loader: Callable[[], Predictor] | None = None) -> FastAPI:
     settings = settings or load_settings()
     _configure_logging(settings.log_level)
-    state = ModelState(loader or default_loader(settings))
+    state = ModelState(loader or default_loader(settings), model_dir=settings.model_dir)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

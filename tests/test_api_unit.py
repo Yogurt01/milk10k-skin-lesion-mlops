@@ -2,12 +2,20 @@
 
 import io
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException, UploadFile
 
 from milk10k_serving import DISCLAIMER
-from milk10k_serving.api import ModelState, allowed_values, metadata_errors, read_limited, to_response
+from milk10k_serving.api import (
+    ModelState,
+    allowed_values,
+    metadata_errors,
+    read_limited,
+    redact_paths,
+    to_response,
+)
 from milk10k_serving.predictor import InvalidInput
 
 from .conftest import TABULAR_ENCODING
@@ -106,3 +114,33 @@ def test_model_state_records_a_failed_load():
     state.start()
     assert state.wait(5) and state.status == "failed" and state.predictor is None
     assert state.error == "RuntimeError: sha256 0000 != manifest ffff"
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            "model package not found: /srv/pkg/manifest.json does not exist",
+            "model package not found: <MODEL_DIR>/manifest.json does not exist",
+        ),
+        (
+            "model package /srv/pkg failed verification: a.onnx: sha256 0000 != manifest ffff",
+            "model package <MODEL_DIR> failed verification: a.onnx: sha256 0000 != manifest ffff",
+        ),
+        ("cannot open '/var/lib/other/x.onnx'", "cannot open '<path>/x.onnx'"),
+        (
+            "site head/neck, ratio 1/2, see https://example.org/a",
+            "site head/neck, ratio 1/2, see https://example.org/a",
+        ),
+    ],
+)
+def test_redact_paths_keeps_file_names_and_drops_absolute_directories(message, expected):
+    assert redact_paths(message, Path("/srv/pkg")) == expected
+
+
+def test_redact_paths_also_redacts_a_relative_model_dir_once_resolved():
+    resolved = Path("artifacts/pkg").resolve()
+    assert (
+        redact_paths(f"{resolved}/manifest.json is missing", Path("artifacts/pkg"))
+        == "<MODEL_DIR>/manifest.json is missing"
+    )

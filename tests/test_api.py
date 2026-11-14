@@ -1,5 +1,8 @@
 """API tests: FastAPI TestClient with a fake predictor (no model files)."""
 
+import logging
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -79,6 +82,27 @@ def test_failed_load_keeps_ready_503_with_the_error():
         assert c.get("/health").status_code == 200
 
 
+def test_failed_load_hides_absolute_paths_from_clients_and_logs_the_detail(tmp_path, caplog):
+    model_dir = tmp_path / "model_package"
+    message = f"{model_dir}/P1a-kg-s44_fold4.onnx: sha256 0000 != manifest ffff; loader at /opt/runtime/lib/ort.so"
+    loader = SlowLoader(error=ModelPackageError(message))
+    loader.release()
+    app = create_app(Settings(model_dir=model_dir), loader=loader)
+    caplog.set_level(logging.ERROR, logger="milk10k_serving")
+    with TestClient(app) as c:
+        assert app.state.model.wait(5)
+        ready = c.get("/ready")
+        predict = _post(c)
+    assert ready.status_code == 503 and predict.status_code == 503
+    assert ready.json()["error"] == (
+        "ModelPackageError: <MODEL_DIR>/P1a-kg-s44_fold4.onnx: sha256 0000 != manifest ffff; loader at <path>/ort.so"
+    )
+    for body in (ready.text, predict.text):  # /predict's 503 repeats the error
+        assert str(tmp_path) not in body and "/opt/runtime" not in body
+        assert not re.search(r"(?<![\w<>])/(?:home|tmp|opt|usr|root)\b", body)
+    assert message in caplog.text and "Traceback" in caplog.text  # the full detail stays in the server log
+
+
 def test_openapi_lists_the_package_vocabulary_once_loaded():
     loader = SlowLoader()
     app = create_app(Settings(), loader=loader)
@@ -101,6 +125,13 @@ def test_openapi_documents_the_status_contract(client):
     responses = client.get("/openapi.json").json()["paths"]["/predict"]["post"]["responses"]
     assert {"200", "400", "413", "422", "500", "503"} <= set(responses)
     assert "treated as missing" in responses["422"]["description"]
+    assert "multipart" in responses["400"]["description"]
+
+
+def test_openapi_states_the_age_range(client):
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    age = next(s for s in schemas.values() if "derm_image" in s.get("properties", {}))["properties"]["age_approx"]
+    assert age["minimum"] == 0 and age["maximum"] == 120 and "0-120" in age["description"]
 
 
 # ---- 200 paths ---------------------------------------------------------------------------------------------------
@@ -145,6 +176,13 @@ def test_unusable_clinical_image_is_treated_as_missing(client, clinical):
     }
     r = _post(client, files=files)
     assert r.status_code == 200 and r.json()["clinical_image_used"] is False
+
+
+@pytest.mark.parametrize("age", ["0", "120"])
+def test_age_range_boundaries_are_accepted(client, ensemble, age):
+    r = _post(client, form={**VALID_FORM, "age_approx": age})
+    assert r.status_code == 200
+    assert ensemble.calls[-1]["age"][0] == pytest.approx(int(age) / 100)
 
 
 def test_empty_clinical_form_value_is_treated_as_missing(client):
