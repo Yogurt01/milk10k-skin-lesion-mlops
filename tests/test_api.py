@@ -11,7 +11,7 @@ from milk10k_serving.api import create_app, get_predictor
 from milk10k_serving.package import ModelPackageError
 from milk10k_serving.settings import Settings
 
-from .fakes import CLASSES, VALID_FORM, FakeEnsemble, SlowLoader, image_bytes, make_predictor
+from .fakes import CLASSES, VALID_FORM, FakeEnsemble, SlowLoader, blank_png, image_bytes, make_predictor
 
 pytestmark = pytest.mark.api
 MB = 1024 * 1024
@@ -126,6 +126,14 @@ def test_openapi_documents_the_status_contract(client):
     assert {"200", "400", "413", "422", "500", "503"} <= set(responses)
     assert "treated as missing" in responses["422"]["description"]
     assert "multipart" in responses["400"]["description"]
+    assert "busy" in responses["503"]["description"] and "`/ready` stays 200" in responses["503"]["description"]
+    assert "Content-Length" in responses["413"]["description"]
+
+
+def test_every_endpoint_has_a_description(client):
+    paths = client.get("/openapi.json").json()["paths"]
+    for path, method in (("/health", "get"), ("/ready", "get"), ("/predict", "post")):
+        assert len(paths[path][method].get("description", "")) > 40, path
 
 
 def test_openapi_states_the_age_range(client):
@@ -218,6 +226,16 @@ def test_empty_or_undecodable_dermoscopic_image_is_422(client, data, reason):
     r = _post(client, files={"derm_image": ("derm.jpg", data, "image/jpeg")})
     assert r.status_code == 422 and _error_locs(r) == [("body", "derm_image")]
     assert reason in r.json()["detail"][0]["msg"]
+
+
+@pytest.mark.parametrize("field", ["derm_image", "clinical_image"])
+def test_image_above_the_pixel_cap_is_422_not_decoded(client, ensemble, field):
+    files = {"derm_image": ("derm.jpg", image_bytes(), "image/jpeg")}
+    files[field] = ("huge.png", blank_png(5001, 5000), "image/png")  # 25,005,000 pixels in a 73 kB file
+    r = _post(client, files=files)
+    assert r.status_code == 422
+    assert _error_locs(r) == [("body", field)] and "too large" in r.json()["detail"][0]["msg"]
+    assert ensemble.calls == []
 
 
 @pytest.mark.parametrize("how", ["omitted", "empty"])

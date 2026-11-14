@@ -6,7 +6,9 @@ byte-identical copy) and the class names from the header of the tracked referenc
 
 import csv
 import json
+import struct
 import threading
+import zlib
 from pathlib import Path
 
 import cv2
@@ -80,3 +82,15 @@ def image_bytes(h: int = 450, w: int = 600, ext: str = ".jpg", seed: int = 0) ->
     ok, buf = cv2.imencode(ext, img)
     assert ok
     return buf.tobytes()
+
+
+def blank_png(w: int, h: int) -> bytes:
+    """A black RGB PNG of w x h written row by row (never held decoded in memory): a tiny file with huge dimensions."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    compressor, row = zlib.compressobj(9), b"\x00" + bytes(3 * w)
+    idat = b"".join(compressor.compress(row) for _ in range(h)) + compressor.flush()
+    header = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")

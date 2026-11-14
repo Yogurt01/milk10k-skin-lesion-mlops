@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .package import ModelPackage
-from .preprocess import build_inputs, decode_rgb
+from .preprocess import ImageTooLarge, build_inputs, decode_rgb
 
 
 class InvalidInput(ValueError):
@@ -50,11 +50,11 @@ class Predictor:
         anatomical_site_general=None,
         fitzpatrick_type=None,
     ) -> Prediction:
-        derm_img = decode_rgb(derm)
+        derm_img = _decode(derm, "dermoscopic_image")
         if derm_img is None:
             reason = "missing" if not derm else "not a decodable image"
             raise InvalidInput("dermoscopic_image", f"dermoscopic image is {reason}")
-        clin_img = decode_rgb(clinical)
+        clin_img = _decode(clinical, "clinical_image")  # undecodable = missing (as the release); too large = 422
         feeds = build_inputs(
             self.package.spec,
             derm_img,
@@ -75,3 +75,12 @@ class Predictor:
             model=self.package.name,
             model_version=self.package.version,
         )
+
+
+def _decode(data: bytes | None, field: str):
+    """decode_rgb, with an image above the decoding cap reported as invalid input (422) for either image: a clinical
+    image that is too large is not silently treated as missing."""
+    try:
+        return decode_rgb(data)
+    except ImageTooLarge as exc:
+        raise InvalidInput(field, f"{field.replace('_', ' ')} is too large: {exc}") from None

@@ -152,3 +152,9 @@ def test_redact_paths_also_redacts_a_relative_model_dir_once_resolved():
         redact_paths(f"{resolved}/manifest.json is missing", Path("artifacts/pkg"))
         == "<MODEL_DIR>/manifest.json is missing"
     )
+
+
+@pytest.mark.parametrize("model_dir", [Path("/"), Path("")])
+def test_redact_paths_never_substitutes_a_root_or_empty_model_dir(model_dir):
+    message = "ModelPackageError: /srv/models/m.onnx: sha256 abc != manifest def"
+    assert redact_paths(message, model_dir) == "ModelPackageError: <path>/m.onnx: sha256 abc != manifest def"

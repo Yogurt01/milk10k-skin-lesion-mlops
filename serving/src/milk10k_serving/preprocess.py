@@ -15,11 +15,21 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import cv2
-import numpy as np
+from .settings import MAX_IMAGE_PIXELS_DEFAULT
+
+# Decoded-image cap (P1-API-09). OpenCV reads OPENCV_IO_MAX_IMAGE_PIXELS once, when cv2 is first imported (measured:
+# setting it after the import has no effect), and rejects a larger image before allocating it. Without a cap a
+# 1.2 MB PNG decoded to 20000 x 20000 x 3 and the process grew by ~2.3 GiB. Set the default before the import.
+IMAGE_PIXEL_CAP_APPLIED = "cv2" not in sys.modules  # False if something imported cv2 before this module
+os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(MAX_IMAGE_PIXELS_DEFAULT))
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
 
 INPUT_NAMES = ("derm", "clin", "clin_mask", "site", "sex", "fst", "age", "age_missing")
 
@@ -54,11 +64,22 @@ class PreprocessSpec:
         return (np.arange(0, 256, dtype=np.float32) - mean.reshape(-1, 1)) * denominator.reshape(-1, 1)
 
 
+class ImageTooLarge(ValueError):
+    """The image's header declares more pixels (or a larger side) than OpenCV's cap allows; it was not decoded."""
+
+
 def decode_rgb(data: bytes | None) -> np.ndarray | None:
-    """RGB uint8 image, or None if `data` is empty or not a decodable image."""
+    """RGB uint8 image, or None if `data` is empty or not a decodable image. Raises ImageTooLarge above the cap
+    (OPENCV_IO_MAX_IMAGE_PIXELS; OpenCV 5 raises instead of returning None, which would otherwise be a 500)."""
     if not data:
         return None
-    img = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    try:
+        img = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error as exc:
+        if "validateInputImageSize" in str(exc):
+            limit = os.environ.get("OPENCV_IO_MAX_IMAGE_PIXELS", "OpenCV default")
+            raise ImageTooLarge(f"image is larger than the decoding limit ({limit} pixels)") from None
+        return None
     if img is None:
         return None
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)

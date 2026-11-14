@@ -1,13 +1,26 @@
 import json
 import math
+import subprocess
+import sys
 
 import cv2
 import numpy as np
 import pytest
 
-from milk10k_serving.preprocess import INPUT_NAMES, PreprocessSpec, build_inputs, clinical, decode_rgb, encode_tabular
+from milk10k_serving import preprocess
+from milk10k_serving.preprocess import (
+    INPUT_NAMES,
+    ImageTooLarge,
+    PreprocessSpec,
+    build_inputs,
+    clinical,
+    decode_rgb,
+    encode_tabular,
+)
+from milk10k_serving.settings import MAX_IMAGE_PIXELS_DEFAULT
 
-from .conftest import TABULAR_ENCODING
+from .conftest import ROOT, TABULAR_ENCODING
+from .fakes import blank_png
 
 pytestmark = pytest.mark.unit
 
@@ -94,3 +107,25 @@ def test_build_inputs_without_clinical_image(spec):
         "age": "float32",
         "age_missing": "float32",
     }
+
+
+def test_image_above_the_default_pixel_cap_is_rejected_before_decoding():
+    assert preprocess.IMAGE_PIXEL_CAP_APPLIED  # conftest imports preprocess before anything imports cv2
+    w, h = 5001, 5000  # 25,005,000 pixels, a 73 kB file
+    assert w * h > MAX_IMAGE_PIXELS_DEFAULT
+    with pytest.raises(ImageTooLarge, match="decoding limit"):
+        decode_rgb(blank_png(w, h))
+    assert decode_rgb(blank_png(600, 450)).shape == (450, 600, 3)
+
+
+def test_pixel_cap_comes_from_the_environment_at_import():
+    code = (
+        "from milk10k_serving.preprocess import ImageTooLarge, decode_rgb\n"
+        "from tests.fakes import blank_png\n"
+        "assert decode_rgb(blank_png(30, 30)).shape == (30, 30, 3)\n"
+        "try:\n    decode_rgb(blank_png(40, 40))\nexcept ImageTooLarge:\n    print('rejected')\n"
+    )
+    env = {"OPENCV_IO_MAX_IMAGE_PIXELS": "1000", "PATH": ""}
+    result = subprocess.run([sys.executable, "-c", code], env=env, cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "rejected"

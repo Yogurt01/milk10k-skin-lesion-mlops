@@ -14,20 +14,30 @@ and traceback go to the server log.
 Status contract of `POST /predict`: 200 ok; 422 missing or invalid field, or missing / undecodable dermoscopic image
 (decision P1-DEC-09). `age_approx` and `anatomical_site_general` are optional (P1-API-11): omitted or empty means
 missing, encoded as in the release (age-missing flag, site code 0), and listed in `metadata_missing`; `sex` and
-`fitzpatrick_type` are required; 413 oversized upload (`MAX_UPLOAD_MB`); 503 model not ready; 400 body that is not
+`fitzpatrick_type` are required; 413 oversized upload (`MAX_UPLOAD_MB`); 503 model not ready, or server busy (more
+than `MAX_CONCURRENT_PREDICTIONS` running plus `MAX_QUEUED_PREDICTIONS` waiting; `Retry-After`); 400 body that is not
 parseable multipart; 500 generic message for unexpected errors (no stack trace in the response).
+
+Concurrency (P1-API-05): `/health`, `/ready` and the `get_predictor` dependency are `async def` and never block, so
+they never wait for the threadpool. `/predict` waits for a slot of the `PredictionLimiter` in the event loop (a waiting
+request holds no thread) and only then runs the blocking work in the threadpool, so at most
+`MAX_CONCURRENT_PREDICTIONS` threads do inference. Overload is not "not ready": `/ready` stays 200.
 """
 
+import asyncio
 import logging
 import re
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -36,7 +46,7 @@ from pydantic import BaseModel, Field
 from . import DISCLAIMER, __version__
 from .package import load_package
 from .predictor import InvalidInput, Prediction, Predictor
-from .preprocess import PreprocessSpec
+from .preprocess import IMAGE_PIXEL_CAP_APPLIED, PreprocessSpec
 from .settings import Settings, load_settings
 
 logger = logging.getLogger("milk10k_serving.api")
@@ -46,6 +56,7 @@ FORM_FIELDS = {"dermoscopic_image": "derm_image", "clinical_image": "clinical_im
 # Metadata fields that may be omitted (missing in 20 / 31 of 5,240 training lesions and 0 / 6 of 479 test lesions);
 # `sex` and `fitzpatrick_type` were never missing, so their missing code is untrained and stays a 422 (P1-API-11).
 OPTIONAL_METADATA = ("age_approx", "anatomical_site_general")
+RETRY_AFTER_BUSY = "1"  # seconds; one prediction takes ~0.7 s on 4 threads (docs/serving_measurements.md)
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -93,7 +104,12 @@ class ErrorResponse(BaseModel):
 PREDICT_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {"description": "Prediction for one lesion. `disclaimer` is present in every response."},
     400: {"model": ErrorResponse, "description": "The request body is not parseable multipart form data."},
-    413: {"model": ErrorResponse, "description": "An uploaded image (or the whole request) exceeds `MAX_UPLOAD_MB`."},
+    413: {
+        "model": ErrorResponse,
+        "description": "The request body is larger than two images at `MAX_UPLOAD_MB` plus 1 MB of form overhead "
+        "(checked from `Content-Length` before the body is read), or a single uploaded image is larger than "
+        "`MAX_UPLOAD_MB`.",
+    },
     422: {
         "description": "`sex` or `fitzpatrick_type` is missing, a form field has an invalid value (allowed values come "
         "from the model package's `tabular_encoding.json`; `age_approx` 0-120), or the dermoscopic image is missing, "
@@ -101,7 +117,13 @@ PREDICT_RESPONSES: dict[int | str, dict[str, Any]] = {
         "treated as missing, as in the release (`clinical_image_used: false`), and an omitted or empty `age_approx` "
         "or `anatomical_site_general` is encoded as missing (listed in `metadata_missing`)."
     },
-    503: {"model": ErrorResponse, "description": "The model is still loading (`Retry-After`) or failed to load."},
+    503: {
+        "model": ErrorResponse,
+        "description": "The model is still loading (`Retry-After`) or failed to load; or the server is busy: "
+        "`MAX_CONCURRENT_PREDICTIONS` predictions are running and `MAX_QUEUED_PREDICTIONS` are waiting "
+        '(`Retry-After`). Busy is not "not ready": `/ready` stays 200. Model readiness is checked before field '
+        "validation, so a request sent while the model is not ready gets 503 even if a field is invalid.",
+    },
     500: {"model": ErrorResponse, "description": "Unexpected server error; generic message, no details."},
 }
 
@@ -116,10 +138,12 @@ _ABSOLUTE_PATH = re.compile(r"(?<![\w.:/<>-])/[^\s'\"`,;:()\[\]{}<>]+")
 
 def redact_paths(message: str, model_dir: Path | None = None) -> str:
     """`message` without absolute paths: MODEL_DIR (as configured and resolved) -> `<MODEL_DIR>`, any other absolute
-    path -> `<path>/<file name>`. File names and the rest of the text (e.g. a sha256 mismatch) are kept."""
+    path -> `<path>/<file name>`. File names and the rest of the text (e.g. a sha256 mismatch) are kept. A MODEL_DIR
+    of "/" (or one that resolves to it) is not substituted. Limitation: a path containing spaces is only redacted up
+    to the first space."""
     if model_dir is not None:
         forms = {str(model_dir), str(Path(model_dir).resolve())}
-        for form in sorted((f.rstrip("/") for f in forms if "/" in f), key=len, reverse=True):
+        for form in sorted((f.rstrip("/") for f in forms if "/" in f and f.rstrip("/")), key=len, reverse=True):
             message = message.replace(form, "<MODEL_DIR>")
 
     def file_name(match: re.Match) -> str:
@@ -186,8 +210,46 @@ def default_loader(settings: Settings) -> Callable[[], Predictor]:
     return load
 
 
-def get_predictor(request: Request) -> Predictor:
-    """FastAPI dependency: the loaded predictor, or 503 while loading / after a failed load. Tests override it."""
+# --------------------------------------------------------------------------------------------------------------------
+# Concurrency limit for /predict
+# --------------------------------------------------------------------------------------------------------------------
+class PredictionLimiter:
+    """At most `max_running` predictions at once; up to `max_queued` more wait in the event loop (holding no thread);
+    any further request is rejected at once with 503 + `Retry-After`. Used from one event loop, so the counters need
+    no lock. Simpler than a threading semaphore with a timeout, whose waiting requests would each hold a threadpool
+    thread (the pool is shared with every sync call of the app)."""
+
+    def __init__(self, max_running: int, max_queued: int):
+        self.max_running = max_running
+        self.max_queued = max_queued
+        self.running = 0
+        self.waiting = 0
+        self._semaphore = asyncio.Semaphore(max_running)
+
+    @asynccontextmanager
+    async def slot(self):
+        if self.running + self.waiting >= self.max_running + self.max_queued:
+            raise HTTPException(
+                503,
+                detail="server busy: too many predictions in progress, retry later",
+                headers={"Retry-After": RETRY_AFTER_BUSY},
+            )
+        self.waiting += 1
+        try:
+            await self._semaphore.acquire()
+        finally:
+            self.waiting -= 1
+        self.running += 1
+        try:
+            yield
+        finally:
+            self.running -= 1
+            self._semaphore.release()
+
+
+async def get_predictor(request: Request) -> Predictor:
+    """FastAPI dependency: the loaded predictor, or 503 while loading / after a failed load. Tests override it.
+    `async def` because it never blocks: it must not wait for the threadpool when predictions fill it."""
     state: ModelState = request.app.state.model
     if state.status == "ready" and state.predictor is not None:
         return state.predictor
@@ -255,8 +317,14 @@ def read_limited(upload: UploadFile, field: str, limit_bytes: int) -> bytes:
 router = APIRouter()
 
 
-@router.get("/health", response_model=HealthResponse, summary="Liveness: the process is up (always 200)")
-def health() -> HealthResponse:
+@router.get(
+    "/health",
+    response_model=HealthResponse,
+    summary="Liveness: the process is up (always 200)",
+    description="Always 200 while the process serves requests, also while the model loads, after a failed load and "
+    "under overload. Never waits for running predictions. Use it for a liveness probe.",
+)
+async def health() -> HealthResponse:
     return HealthResponse()
 
 
@@ -265,9 +333,13 @@ def health() -> HealthResponse:
     response_model=ReadyResponse,
     response_model_exclude_none=True,
     summary="Readiness: 200 once the model is loaded, 503 while loading or after a failed load",
+    description="200 with the model name, version and load time once the model package is loaded and verified "
+    "(sha256). 503 with `status` `loading`, or `failed` and the reason (absolute paths redacted). Overload does not "
+    "change readiness: when `/predict` is busy (503 + `Retry-After`) `/ready` stays 200. Use it for a readiness "
+    "probe.",
     responses={503: {"model": ReadyResponse, "description": "Loading, or loading failed (`error` says why)."}},
 )
-def ready(request: Request):
+async def ready(request: Request):
     state: ModelState = request.app.state.model
     if state.status == "ready" and state.predictor is not None:
         package = state.predictor.package
@@ -287,11 +359,12 @@ def ready(request: Request):
     "Content-Type header. Allowed values of `sex`, `anatomical_site_general` and `fitzpatrick_type` come from the "
     "model package's `tabular_encoding.json` (listed in this schema once the model is loaded). `sex` and "
     "`fitzpatrick_type` are required; `age_approx` (0-120) and `anatomical_site_general` are optional: omitted or "
-    "empty means missing, encoded as in the release and listed in the response's `metadata_missing`. "
-    "Research model, not a medical device.",
+    "empty means missing, encoded as in the release and listed in the response's `metadata_missing`. At most "
+    "`MAX_CONCURRENT_PREDICTIONS` predictions run at once and `MAX_QUEUED_PREDICTIONS` more wait; further requests get "
+    "503 with `Retry-After` while `/ready` stays 200. Research model, not a medical device.",
     responses=PREDICT_RESPONSES,
 )
-def predict(
+async def predict(
     request: Request,
     predictor: Annotated[Predictor, Depends(get_predictor)],
     derm_image: Annotated[UploadFile, File(description="Dermoscopic image (required).")],
@@ -326,7 +399,34 @@ def predict(
         File(description="Clinical close-up (optional). Missing or undecodable = treated as missing."),
     ] = None,
 ) -> PredictionResponse:
-    limit = request.app.state.settings.max_upload_mb * MB
+    limiter: PredictionLimiter = request.app.state.limiter
+    async with limiter.slot():  # waits in the event loop; 503 at once if the queue is full
+        return await run_in_threadpool(
+            _predict_blocking,
+            request.app.state.settings,
+            predictor,
+            derm_image,
+            clinical_image,
+            age_approx=age_approx,
+            sex=sex,
+            anatomical_site_general=anatomical_site_general,
+            fitzpatrick_type=fitzpatrick_type,
+        )
+
+
+def _predict_blocking(
+    settings: Settings,
+    predictor: Predictor,
+    derm_image: UploadFile,
+    clinical_image: UploadFile | None,
+    *,
+    age_approx: float | None,
+    sex: str,
+    anatomical_site_general: str | None,
+    fitzpatrick_type: int,
+) -> PredictionResponse:
+    """The blocking part of /predict (file reads, validation against the package, inference); runs in a thread."""
+    limit = settings.max_upload_mb * MB
     derm = read_limited(derm_image, "derm_image", limit)
     clinical = read_limited(clinical_image, "clinical_image", limit) if clinical_image is not None else None
     errors = metadata_errors(
@@ -337,9 +437,8 @@ def predict(
     )
     if errors:
         raise RequestValidationError(errors)
-    missing = [
-        f for f, v in (("age_approx", age_approx), ("anatomical_site_general", anatomical_site_general)) if v is None
-    ]
+    optional = {"age_approx": age_approx, "anatomical_site_general": anatomical_site_general}
+    missing = [field for field in OPTIONAL_METADATA if optional[field] is None]
     if missing:
         logger.info("metadata treated as missing: %s", ", ".join(missing))
     try:
@@ -362,12 +461,37 @@ def predict(
 # --------------------------------------------------------------------------------------------------------------------
 # App factory
 # --------------------------------------------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------------------------------------------
+# Request ids and logging (P1-PY-07). Log lines carry ids, sizes, status and latency only: never image bytes or
+# metadata values (medical data).
+# --------------------------------------------------------------------------------------------------------------------
+REQUEST_ID_HEADER = "X-Request-ID"
+_VALID_REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+def request_id_from(header: str | None) -> str:
+    """The client's X-Request-ID if it is 1-64 characters of [A-Za-z0-9._:-], otherwise a new random id."""
+    if header and _VALID_REQUEST_ID.fullmatch(header):
+        return header
+    return uuid.uuid4().hex
+
+
+class RequestIdFilter(logging.Filter):
+    """Adds `request_id` (from the current request's context, "-" outside a request) to every record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_var.get()
+        return True
+
+
 def _configure_logging(level: str) -> None:
     package_logger = logging.getLogger("milk10k_serving")
     package_logger.setLevel(level)
     if not package_logger.handlers:
         handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        handler.addFilter(RequestIdFilter())
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s"))
         package_logger.addHandler(handler)
 
 
@@ -384,6 +508,8 @@ def _add_vocabulary(schema: dict, spec: PreprocessSpec) -> None:
 def create_app(settings: Settings | None = None, loader: Callable[[], Predictor] | None = None) -> FastAPI:
     settings = settings or load_settings()
     _configure_logging(settings.log_level)
+    if not IMAGE_PIXEL_CAP_APPLIED:
+        logger.warning("cv2 was imported before milk10k_serving.preprocess: OPENCV_IO_MAX_IMAGE_PIXELS may not apply")
     state = ModelState(loader or default_loader(settings), model_dir=settings.model_dir)
 
     @asynccontextmanager
@@ -400,6 +526,7 @@ def create_app(settings: Settings | None = None, loader: Callable[[], Predictor]
     )
     app.state.settings = settings
     app.state.model = state
+    app.state.limiter = PredictionLimiter(settings.max_concurrent_predictions, settings.max_queued_predictions)
     app.include_router(router)
 
     @app.middleware("http")
@@ -417,10 +544,47 @@ def create_app(settings: Settings | None = None, loader: Callable[[], Predictor]
                 )
         return await call_next(request)
 
+    @app.middleware("http")
+    async def request_context(request: Request, call_next):
+        """Outermost: request id (accepted from X-Request-ID or generated, returned in the response header and set
+        for every log line of the request), one access line (method, path, status, latency, body size), and the
+        generic 500 for any unexpected error."""
+        request_id = request_id_from(request.headers.get(REQUEST_ID_HEADER))
+        token = request_id_var.set(request_id)
+        request.state.request_id = request_id
+        t0 = time.perf_counter()
+        try:
+            try:
+                response = await call_next(request)
+            except Exception:
+                logger.exception(
+                    "unexpected error on %s %s (request_id=%s)", request.method, request.url.path, request_id
+                )
+                response = JSONResponse(status_code=500, content={"detail": "internal server error"})
+            response.headers[REQUEST_ID_HEADER] = request_id
+            level = logging.DEBUG if request.url.path in ("/health", "/ready") else logging.INFO  # probes: quiet
+            logger.log(
+                level,
+                "request_id=%s method=%s path=%s status=%d duration_ms=%.1f request_bytes=%s",
+                request_id,
+                request.method,
+                request.url.path,
+                response.status_code,
+                (time.perf_counter() - t0) * 1000,
+                request.headers.get("content-length", "-"),
+            )
+            return response
+        finally:
+            request_id_var.reset(token)
+
     @app.exception_handler(Exception)
     async def unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        logger.exception("unexpected error on %s %s", request.method, request.url.path)
-        return JSONResponse(status_code=500, content={"detail": "internal server error"})
+        """Fallback for errors outside `request_context` (the middleware handles the rest)."""
+        request_id = getattr(request.state, "request_id", "-")
+        logger.exception("unexpected error on %s %s (request_id=%s)", request.method, request.url.path, request_id)
+        return JSONResponse(
+            status_code=500, content={"detail": "internal server error"}, headers={REQUEST_ID_HEADER: request_id}
+        )
 
     def openapi() -> dict:
         if app.openapi_schema:

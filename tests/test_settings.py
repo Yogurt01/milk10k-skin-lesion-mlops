@@ -21,13 +21,25 @@ def test_environment_overrides_a_setting(monkeypatch):
     assert settings.verify_sha256 is False
 
 
+def test_prediction_limits_from_environment():
+    settings = load_settings({"MAX_CONCURRENT_PREDICTIONS": "3", "MAX_QUEUED_PREDICTIONS": "0"})
+    assert (settings.max_concurrent_predictions, settings.max_queued_predictions) == (3, 0)
+
+
 def test_empty_value_keeps_default():
     assert load_settings({"LOG_LEVEL": "  "}).log_level == "INFO"
 
 
 @pytest.mark.parametrize(
     ("name", "value"),
-    [("ORT_INTRA_OP_THREADS", "0"), ("MODEL_VERIFY_SHA256", "maybe"), ("LOG_LEVEL", "LOUD"), ("MAX_UPLOAD_MB", "ten")],
+    [
+        ("ORT_INTRA_OP_THREADS", "0"),
+        ("MODEL_VERIFY_SHA256", "maybe"),
+        ("LOG_LEVEL", "LOUD"),
+        ("MAX_UPLOAD_MB", "ten"),
+        ("MAX_CONCURRENT_PREDICTIONS", "0"),
+        ("MAX_QUEUED_PREDICTIONS", "-1"),
+    ],
 )
 def test_invalid_value_names_the_variable(name, value):
     with pytest.raises(ValueError, match=name):

@@ -5,6 +5,10 @@ default. The same list, with defaults, is in the repository's `.env.example`.
 - `MODEL_VERIFY_SHA256` (`true`): check every package file against the manifest at startup
 - `ORT_INTRA_OP_THREADS` (`4`): ONNX Runtime threads per session
 - `MAX_UPLOAD_MB` (`10`): largest accepted image upload
+- `MAX_CONCURRENT_PREDICTIONS` (`2`): `/predict` requests that run inference at the same time
+- `MAX_QUEUED_PREDICTIONS` (`8`): further `/predict` requests that wait for a free slot; beyond that: 503
+- `OPENCV_IO_MAX_IMAGE_PIXELS` (`25000000`): largest decoded image (width x height) OpenCV accepts; OpenCV reads it
+  once, when `cv2` is first imported (`milk10k_serving.preprocess` sets the default before that import)
 - `LOG_LEVEL` (`INFO`): DEBUG, INFO, WARNING or ERROR
 - `OTEL_SERVICE_NAME` (`milk10k-api`): service name in traces
 - `OTEL_EXPORTER_OTLP_ENDPOINT` (empty: tracing off): OTLP endpoint, e.g. `http://jaeger:4318`
@@ -18,6 +22,9 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+# Decoded-image cap (P1-API-09): every MILK10k image is at most 600 x 450 = 270,000 pixels; 25 M pixels still accepts a
+# 24-megapixel camera photo. One decoded RGB image at the cap is 75 MB (uint8).
+MAX_IMAGE_PIXELS_DEFAULT = 25_000_000
 
 
 def _bool(raw: str) -> bool:
@@ -36,6 +43,13 @@ def _positive_int(raw: str) -> int:
     return value
 
 
+def _non_negative_int(raw: str) -> int:
+    value = int(raw)
+    if value < 0:
+        raise ValueError(f"must be >= 0, got {value}")
+    return value
+
+
 def _log_level(raw: str) -> str:
     value = raw.strip().upper()
     if value not in LOG_LEVELS:
@@ -49,6 +63,9 @@ class Settings:
     verify_sha256: bool = True
     ort_threads: int = 4
     max_upload_mb: int = 10
+    max_concurrent_predictions: int = 2
+    max_queued_predictions: int = 8
+    max_image_pixels: int = MAX_IMAGE_PIXELS_DEFAULT
     log_level: str = "INFO"
     otel_service_name: str = "milk10k-api"
     otel_exporter_otlp_endpoint: str = ""
@@ -59,6 +76,9 @@ ENV_VARS: dict[str, tuple[str, Callable[[str], object]]] = {
     "verify_sha256": ("MODEL_VERIFY_SHA256", _bool),
     "ort_threads": ("ORT_INTRA_OP_THREADS", _positive_int),
     "max_upload_mb": ("MAX_UPLOAD_MB", _positive_int),
+    "max_concurrent_predictions": ("MAX_CONCURRENT_PREDICTIONS", _positive_int),
+    "max_queued_predictions": ("MAX_QUEUED_PREDICTIONS", _non_negative_int),
+    "max_image_pixels": ("OPENCV_IO_MAX_IMAGE_PIXELS", _positive_int),
     "log_level": ("LOG_LEVEL", _log_level),
     "otel_service_name": ("OTEL_SERVICE_NAME", str),
     "otel_exporter_otlp_endpoint": ("OTEL_EXPORTER_OTLP_ENDPOINT", str),

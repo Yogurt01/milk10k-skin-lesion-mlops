@@ -10,6 +10,10 @@ from pathlib import Path
 
 import pytest
 
+# Import milk10k_serving's preprocessing before any test module imports cv2, so that the decoded-image cap
+# (OPENCV_IO_MAX_IMAGE_PIXELS, read by OpenCV at import) is the project default in the test process too.
+import milk10k_serving.preprocess  # noqa: F401
+
 ROOT = Path(__file__).resolve().parents[1]
 TRAINING = ROOT / "training"
 SAMPLE_DIR = TRAINING / "sample"
