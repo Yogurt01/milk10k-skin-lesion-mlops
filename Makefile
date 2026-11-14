@@ -6,7 +6,7 @@ SERVING_PY := serving/.venv/bin/python
 NOTEBOOK_PY := notebooks/.venv/bin/python
 PYTEST_FAST := -m "not parity and not slow"
 
-.PHONY: help setup setup-notebooks test test-all lint format hygiene export bench up down k8s-deploy tf-plan
+.PHONY: help setup setup-notebooks test test-all lint format hygiene serve export bench up down k8s-deploy tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -36,6 +36,9 @@ format: ## Apply ruff formatting and safe fixes
 
 hygiene: ## No data, images, weights or secrets in git (index + untracked files)
 	python3 scripts/check_repo_hygiene.py --untracked notebooks/08_export_for_deployment.ipynb
+
+serve: ## Run the API locally on port 8000 (needs the model package in MODEL_DIR)
+	$(SERVING_PY) -m uvicorn milk10k_serving.api:app --host 0.0.0.0 --port 8000
 
 export: ## Execute notebook 08: ONNX export, model package, parity check (needs the checkpoints + sample lesions)
 	cd notebooks && .venv/bin/jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=1800 08_export_for_deployment.ipynb

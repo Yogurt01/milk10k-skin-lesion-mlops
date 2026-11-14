@@ -3,3 +3,7 @@
 numpy==2.5.3
 onnxruntime==1.31.1
 opencv-python-headless==5.0.0.93
+# API (FastAPI app, multipart uploads, ASGI server); exact versions are pinned in requirements.txt
+fastapi
+python-multipart
+uvicorn
