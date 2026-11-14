@@ -15,11 +15,11 @@ Styling in every diagram:
 
 ```mermaid
 flowchart LR
-    client(["Client<br/>curl, Python client"])
+    client(["Client<br/>curl, serving/client.py"])
 
     subgraph serving["Serving"]
         nginx["nginx reverse proxy<br/>official image in Compose<br/>P1-NGX-01..04"]
-        api["FastAPI app, api.py<br/>/health /ready /predict"]
+        api["FastAPI app, api.py<br/>/health /ready /predict<br/>request id, concurrency limit"]
         metrics["/metrics endpoint<br/>P1-OBS-01, P1-OBS-02"]
         pred["milk10k_serving Predictor<br/>decode, preprocess, assemble"]
         ort["ONNX Runtime, CPU<br/>15 member sessions"]
@@ -85,9 +85,9 @@ flowchart LR
 
 | Component | Status | Evidence |
 |---|---|---|
-| Client | external | Any HTTP client. A Python client example is planned (P1-API-08) |
-| FastAPI app (`/health`, `/ready`, `/predict`) | implemented | [`serving/src/milk10k_serving/api.py`](../serving/src/milk10k_serving/api.py); P1-API-01..04, P1-API-06, P1-API-10, P1-API-11; started with `make serve` ([Makefile](../Makefile)) |
-| Predictor (decode, preprocessing, assembly) | implemented | [`predictor.py`](../serving/src/milk10k_serving/predictor.py), [`preprocess.py`](../serving/src/milk10k_serving/preprocess.py); P1-PY-05 |
+| Client | external; example client implemented | Any HTTP client; [`serving/client.py`](../serving/client.py) (standard library only, P1-API-08) |
+| FastAPI app (`/health`, `/ready`, `/predict`) | implemented | [`serving/src/milk10k_serving/api.py`](../serving/src/milk10k_serving/api.py); P1-API-01..11; request ids and access log (P1-PY-07); started with `make serve` ([Makefile](../Makefile)) |
+| Predictor (decode, preprocessing, assembly) | implemented | [`predictor.py`](../serving/src/milk10k_serving/predictor.py), [`preprocess.py`](../serving/src/milk10k_serving/preprocess.py); P1-PY-05; decoded-image cap P1-API-09 |
 | ONNX Runtime, 15 member sessions | implemented | [`package.py`](../serving/src/milk10k_serving/package.py) (`load_package`, `Ensemble`); P1-PY-04 |
 | Model package with sha256 manifest | implemented | Built by [notebook 08](../notebooks/08_export_for_deployment.ipynb) (P1-NB-03); verified at startup by `verify_package` (P1-PY-04). Not in git |
 | GitHub Release `model-v1.0.0` | implemented (assets uploaded) | P1-SET-10 (in progress: download and verification by `scripts/fetch_model.sh`, P1-BSH-02, is planned) |
@@ -108,8 +108,10 @@ flowchart LR
 
 Derived from [`api.py`](../serving/src/milk10k_serving/api.py). The status codes and the steps that raise them are
 listed in that file's docstring and in the OpenAPI `responses`. Form parsing and field validation run inside FastAPI,
-before the body of the `predict` handler. `predict` is a sync `def`, so it runs in the framework's threadpool. No
-explicit concurrency limit exists yet (P1-API-05, planned).
+before the body of the `predict` handler. `predict` is an `async def` that waits for a slot of the
+`PredictionLimiter` in the event loop (a waiting request holds no thread), then runs the blocking work in the
+threadpool, so at most `MAX_CONCURRENT_PREDICTIONS` threads do inference (P1-API-05). `/health`, `/ready` and
+`get_predictor` are `async def` and never wait for the threadpool.
 
 ```mermaid
 sequenceDiagram
@@ -117,6 +119,7 @@ sequenceDiagram
     participant C as Client
     participant U as uvicorn / FastAPI
     participant G as get_predictor
+    participant Q as PredictionLimiter
     participant R as read_limited
     participant M as metadata_errors
     participant P as Predictor
@@ -134,6 +137,7 @@ sequenceDiagram
     end
 
     C->>U: POST /predict (multipart form)
+    U->>U: request_context middleware: request id from X-Request-ID or generated
     opt Content-Length above 2 x MAX_UPLOAD_MB + 1 MB
         U-->>C: 413 from the limit_request_size middleware
     end
@@ -153,6 +157,13 @@ sequenceDiagram
     opt field missing or invalid
         U-->>C: 422
     end
+    U->>Q: wait for a slot in the event loop
+    alt MAX_CONCURRENT_PREDICTIONS running and MAX_QUEUED_PREDICTIONS waiting
+        Q-->>C: 503 with Retry-After 1 (busy, /ready stays 200)
+    else slot free, or one frees up while queued
+        Q-->>U: slot held until the prediction finishes
+    end
+    Note over U,T: From here the work runs in a threadpool thread
     U->>R: derm_image, then clinical_image if sent
     opt an image above MAX_UPLOAD_MB
         R-->>C: 413
@@ -163,16 +174,18 @@ sequenceDiagram
     end
     U->>P: predict(images, metadata), omitted age or site encoded as missing
     P->>P: decode, preprocess, run the 15 sessions in sequence, average
-    opt dermoscopic image missing or not decodable
+    opt dermoscopic image missing or not decodable, or either image above OPENCV_IO_MAX_IMAGE_PIXELS
         P-->>C: 422 (InvalidInput)
     end
     P-->>U: Prediction
     U->>T: Prediction and metadata_missing
     T-->>C: 200 JSON, always with the disclaimer
-    Note over C,L: Any other exception at any step: 500 with a generic message (traceback only in the server log)
+    Note over C,L: Every response carries X-Request-ID and one access log line (id, path, status, latency, size)
+    Note over C,L: Any other exception: 500 with a generic message (traceback and request id only in the server log)
 ```
 
-`GET /health` always returns 200. `GET /ready` returns 503 while loading or after a failed load, and 200 when ready.
+`GET /health` always returns 200. `GET /ready` returns 503 while loading or after a failed load, and 200 when ready,
+also under overload. Both are `async def`, so they answer while every prediction slot is busy.
 
 ## 3. CI/CD and deployment flow (all planned)
 
