@@ -12,8 +12,10 @@ clients has absolute paths redacted (`<MODEL_DIR>/file`, other paths reduced to 
 and traceback go to the server log.
 
 Status contract of `POST /predict`: 200 ok; 422 missing or invalid field, or missing / undecodable dermoscopic image
-(decision P1-DEC-09); 413 oversized upload (`MAX_UPLOAD_MB`); 503 model not ready; 400 body that is not parseable
-multipart; 500 generic message for unexpected errors (no stack trace in the response).
+(decision P1-DEC-09). `age_approx` and `anatomical_site_general` are optional (P1-API-11): omitted or empty means
+missing, encoded as in the release (age-missing flag, site code 0), and listed in `metadata_missing`; `sex` and
+`fitzpatrick_type` are required; 413 oversized upload (`MAX_UPLOAD_MB`); 503 model not ready; 400 body that is not
+parseable multipart; 500 generic message for unexpected errors (no stack trace in the response).
 """
 
 import logging
@@ -41,6 +43,9 @@ logger = logging.getLogger("milk10k_serving.api")
 MB = 1024 * 1024
 # Field names used by the predictor -> form field names of the API
 FORM_FIELDS = {"dermoscopic_image": "derm_image", "clinical_image": "clinical_image"}
+# Metadata fields that may be omitted (missing in 20 / 31 of 5,240 training lesions and 0 / 6 of 479 test lesions);
+# `sex` and `fitzpatrick_type` were never missing, so their missing code is untrained and stays a 422 (P1-API-11).
+OPTIONAL_METADATA = ("age_approx", "anatomical_site_general")
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -58,6 +63,11 @@ class PredictionResponse(BaseModel):
     )
     model: str = Field(description="Model package name (manifest `name`).")
     model_version: str = Field(description="Model package version (manifest `version`).")
+    metadata_missing: list[str] = Field(
+        description="Optional metadata fields that were omitted or empty and were encoded as missing, as in the "
+        "release (`age_approx`: age-missing flag; `anatomical_site_general`: site code 0). Empty list when none.",
+        examples=[[], ["anatomical_site_general"]],
+    )
     disclaimer: str = Field(min_length=1, description="Always present: research model, not a medical device.")
 
 
@@ -85,10 +95,11 @@ PREDICT_RESPONSES: dict[int | str, dict[str, Any]] = {
     400: {"model": ErrorResponse, "description": "The request body is not parseable multipart form data."},
     413: {"model": ErrorResponse, "description": "An uploaded image (or the whole request) exceeds `MAX_UPLOAD_MB`."},
     422: {
-        "description": "A form field is missing or invalid (allowed values come from the model package's "
-        "`tabular_encoding.json`), or the dermoscopic image is missing, empty or not a decodable image (P1-DEC-09). "
-        "A missing or undecodable **clinical** image is not an error: it is treated as missing, as in the release, "
-        "and the response says `clinical_image_used: false`."
+        "description": "`sex` or `fitzpatrick_type` is missing, a form field has an invalid value (allowed values come "
+        "from the model package's `tabular_encoding.json`; `age_approx` 0-120), or the dermoscopic image is missing, "
+        "empty or not a decodable image (P1-DEC-09). Not errors: a missing or undecodable **clinical** image is "
+        "treated as missing, as in the release (`clinical_image_used: false`), and an omitted or empty `age_approx` "
+        "or `anatomical_site_general` is encoded as missing (listed in `metadata_missing`)."
     },
     503: {"model": ErrorResponse, "description": "The model is still loading (`Retry-After`) or failed to load."},
     500: {"model": ErrorResponse, "description": "Unexpected server error; generic message, no details."},
@@ -198,10 +209,13 @@ def allowed_values(spec: PreprocessSpec) -> dict[str, list]:
 
 
 def metadata_errors(spec: PreprocessSpec, **values) -> list[dict]:
-    """Errors (FastAPI's validation-error format) for form values outside the package's vocabulary."""
+    """Errors (FastAPI's validation-error format) for form values outside the package's vocabulary. A missing (None)
+    optional field is not an error."""
     errors = []
     for field, allowed in allowed_values(spec).items():
         value = values[field]
+        if value is None and field in OPTIONAL_METADATA:
+            continue
         if value not in allowed:
             errors.append(
                 {
@@ -214,7 +228,7 @@ def metadata_errors(spec: PreprocessSpec, **values) -> list[dict]:
     return errors
 
 
-def to_response(prediction: Prediction) -> PredictionResponse:
+def to_response(prediction: Prediction, metadata_missing: list[str] | None = None) -> PredictionResponse:
     return PredictionResponse(
         p_malignant=prediction.p_malignant,
         probabilities=prediction.probabilities,
@@ -222,6 +236,7 @@ def to_response(prediction: Prediction) -> PredictionResponse:
         clinical_image_used=prediction.clinical_image_used,
         model=prediction.model,
         model_version=prediction.model_version,
+        metadata_missing=list(metadata_missing or []),
         disclaimer=DISCLAIMER,
     )
 
@@ -270,7 +285,9 @@ def ready(request: Request):
     description="Multipart form: a dermoscopic image (required), a clinical close-up (optional) and four metadata "
     "fields. Images may be any format OpenCV decodes (e.g. JPEG, PNG); the type is checked by decoding, not by the "
     "Content-Type header. Allowed values of `sex`, `anatomical_site_general` and `fitzpatrick_type` come from the "
-    "model package's `tabular_encoding.json` (listed in this schema once the model is loaded). "
+    "model package's `tabular_encoding.json` (listed in this schema once the model is loaded). `sex` and "
+    "`fitzpatrick_type` are required; `age_approx` (0-120) and `anatomical_site_general` are optional: omitted or "
+    "empty means missing, encoded as in the release and listed in the response's `metadata_missing`. "
     "Research model, not a medical device.",
     responses=PREDICT_RESPONSES,
 )
@@ -278,12 +295,32 @@ def predict(
     request: Request,
     predictor: Annotated[Predictor, Depends(get_predictor)],
     derm_image: Annotated[UploadFile, File(description="Dermoscopic image (required).")],
-    age_approx: Annotated[
-        float, Form(ge=0, le=120, allow_inf_nan=False, description="Approximate age in years (0-120).")
+    sex: Annotated[
+        str, Form(description="Sex (required), as in the model package's tabular encoding.", examples=["male"])
     ],
-    sex: Annotated[str, Form(description="Sex, as in the model package's tabular encoding.")],
-    anatomical_site_general: Annotated[str, Form(description="Anatomical site, as in the tabular encoding.")],
-    fitzpatrick_type: Annotated[int, Form(description="Skin-tone code (Fitzpatrick type), per the tabular encoding.")],
+    fitzpatrick_type: Annotated[
+        int,
+        Form(description="Skin-tone code (Fitzpatrick type, required), per the tabular encoding.", examples=[4]),
+    ],
+    age_approx: Annotated[
+        float | None,
+        Form(
+            ge=0,
+            le=120,
+            allow_inf_nan=False,
+            description="Approximate age in years, 0-120 (optional). Omitted or empty = missing (age-missing flag, "
+            "as in the release); listed in `metadata_missing`.",
+            examples=[60],
+        ),
+    ] = None,
+    anatomical_site_general: Annotated[
+        str | None,
+        Form(
+            description="Anatomical site, as in the tabular encoding (optional). Omitted or empty = missing (site "
+            "code 0, as in the release); listed in `metadata_missing`.",
+            examples=["head/neck"],
+        ),
+    ] = None,
     clinical_image: Annotated[
         UploadFile | None,
         File(description="Clinical close-up (optional). Missing or undecodable = treated as missing."),
@@ -300,6 +337,11 @@ def predict(
     )
     if errors:
         raise RequestValidationError(errors)
+    missing = [
+        f for f, v in (("age_approx", age_approx), ("anatomical_site_general", anatomical_site_general)) if v is None
+    ]
+    if missing:
+        logger.info("metadata treated as missing: %s", ", ".join(missing))
     try:
         prediction = predictor.predict(
             derm,
@@ -314,7 +356,7 @@ def predict(
         raise RequestValidationError(
             [{"type": "value_error", "loc": ("body", field), "msg": exc.message, "input": None}]
         ) from None
-    return to_response(prediction)
+    return to_response(prediction, missing)
 
 
 # --------------------------------------------------------------------------------------------------------------------

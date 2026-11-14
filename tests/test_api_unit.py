@@ -37,6 +37,12 @@ def test_valid_metadata_has_no_errors():
     assert metadata_errors(make_spec(), **VALID) == []
 
 
+def test_missing_optional_site_is_not_an_error_but_missing_required_fields_are():
+    assert metadata_errors(make_spec(), **{**VALID, "anatomical_site_general": None}) == []
+    errors = metadata_errors(make_spec(), sex=None, anatomical_site_general=None, fitzpatrick_type=None)
+    assert [e["loc"][1] for e in errors] == ["sex", "fitzpatrick_type"]
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -67,6 +73,8 @@ def test_response_assembly_carries_every_field_and_the_disclaimer():
     assert response.diagnosis == "BCC"
     assert response.model == "fake-package" and response.model_version == "0.0-test"
     assert response.disclaimer == DISCLAIMER and DISCLAIMER.strip()
+    assert response.metadata_missing == []
+    assert to_response(prediction, ["age_approx"]).metadata_missing == ["age_approx"]
 
 
 def test_read_limited_accepts_up_to_the_limit_and_rejects_more():

@@ -131,7 +131,18 @@ def test_openapi_documents_the_status_contract(client):
 def test_openapi_states_the_age_range(client):
     schemas = client.get("/openapi.json").json()["components"]["schemas"]
     age = next(s for s in schemas.values() if "derm_image" in s.get("properties", {}))["properties"]["age_approx"]
-    assert age["minimum"] == 0 and age["maximum"] == 120 and "0-120" in age["description"]
+    number = next(branch for branch in age["anyOf"] if branch.get("type") == "number")  # optional: number or null
+    assert number["minimum"] == 0 and number["maximum"] == 120 and "0-120" in age["description"]
+
+
+def test_openapi_states_which_metadata_is_required_and_the_missing_rule(client):
+    schemas = client.get("/openapi.json").json()["components"]["schemas"]
+    body = next(s for s in schemas.values() if "derm_image" in s.get("properties", {}))
+    assert set(body["required"]) == {"derm_image", "sex", "fitzpatrick_type"}
+    for field in ("age_approx", "anatomical_site_general"):
+        assert "metadata_missing" in body["properties"][field]["description"]
+        assert body["properties"][field]["examples"]
+    assert "metadata_missing" in schemas["PredictionResponse"]["required"]
 
 
 # ---- 200 paths ---------------------------------------------------------------------------------------------------
@@ -150,9 +161,11 @@ def test_valid_request_returns_every_field_and_the_disclaimer(client, ensemble):
         "clinical_image_used",
         "model",
         "model_version",
+        "metadata_missing",
         "disclaimer",
     }
     assert body["disclaimer"] == DISCLAIMER and DISCLAIMER.strip()
+    assert body["metadata_missing"] == []
     assert list(body["probabilities"]) == CLASSES and sum(body["probabilities"].values()) == pytest.approx(1.0)
     assert body["diagnosis"] == "BCC" and body["p_malignant"] == pytest.approx(0.8)
     assert body["clinical_image_used"] is True and body["model"] == "fake-package"
@@ -207,11 +220,39 @@ def test_empty_or_undecodable_dermoscopic_image_is_422(client, data, reason):
     assert reason in r.json()["detail"][0]["msg"]
 
 
-@pytest.mark.parametrize("field", list(VALID_FORM))
-def test_missing_form_field_is_422(client, field):
-    form = {k: v for k, v in VALID_FORM.items() if k != field}
+@pytest.mark.parametrize("how", ["omitted", "empty"])
+@pytest.mark.parametrize("field", ["sex", "fitzpatrick_type"])
+def test_missing_required_metadata_field_is_422(client, field, how):
+    form = {k: v for k, v in VALID_FORM.items() if k != field} if how == "omitted" else {**VALID_FORM, field: ""}
     r = _post(client, form=form)
     assert r.status_code == 422 and ("body", field) in _error_locs(r)
+
+
+@pytest.mark.parametrize("how", ["omitted", "empty"])
+@pytest.mark.parametrize(
+    ("field", "feeds_when_missing"),
+    [("age_approx", {"age": 0.0, "age_missing": 1.0}), ("anatomical_site_general", {"site": 0})],
+)
+def test_missing_optional_metadata_field_is_encoded_as_missing(
+    client, ensemble, caplog, field, feeds_when_missing, how
+):
+    form = {k: v for k, v in VALID_FORM.items() if k != field} if how == "omitted" else {**VALID_FORM, field: ""}
+    caplog.set_level(logging.INFO, logger="milk10k_serving")
+    r = _post(client, form=form)
+    assert r.status_code == 200 and r.json()["metadata_missing"] == [field]
+    assert r.json()["disclaimer"] == DISCLAIMER
+    feeds = ensemble.calls[-1]  # encoded as the release does
+    assert {k: feeds[k][0] for k in feeds_when_missing} == pytest.approx(feeds_when_missing)
+    assert f"metadata treated as missing: {field}" in caplog.text
+
+
+def test_both_optional_fields_missing_are_listed_and_present_ones_are_not(client, ensemble):
+    form = {"sex": "female", "fitzpatrick_type": "2", "age_approx": ""}
+    r = _post(client, form=form)
+    assert r.status_code == 200 and r.json()["metadata_missing"] == ["age_approx", "anatomical_site_general"]
+    feeds = ensemble.calls[-1]
+    assert (feeds["site"][0], feeds["age_missing"][0], feeds["sex"][0], feeds["fst"][0]) == (0, 1.0, 2, 2)
+    assert _post(client).json()["metadata_missing"] == []  # all four sent: nothing missing
 
 
 @pytest.mark.parametrize(
