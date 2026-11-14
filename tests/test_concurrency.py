@@ -1,11 +1,12 @@
 """P1-API-05: /predict concurrency limit, bounded queue, overload 503, and liveness/readiness that never wait for the
 threadpool. Real uvicorn server in a thread (see live_server.py) with a fake ensemble that blocks until released."""
 
+import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import httpx
+import httpx2
 import pytest
 
 from milk10k_serving.api import RETRY_AFTER_BUSY, create_app
@@ -48,14 +49,14 @@ def _wait_until(condition, what: str) -> None:
         time.sleep(0.01)
 
 
-def _post(base: str) -> httpx.Response:
+def _post(base: str) -> httpx2.Response:
     files = {"derm_image": ("derm.jpg", image_bytes(), "image/jpeg")}
-    return httpx.post(base + "/predict", data=VALID_FORM, files=files, timeout=TIMEOUT * 2)
+    return httpx2.post(base + "/predict", data=VALID_FORM, files=files, timeout=TIMEOUT * 2)
 
 
-def _timed_get(url: str) -> tuple[httpx.Response, float]:
+def _timed_get(url: str) -> tuple[httpx2.Response, float]:
     t0 = time.perf_counter()
-    response = httpx.get(url, timeout=TIMEOUT)
+    response = httpx2.get(url, timeout=TIMEOUT)
     return response, (time.perf_counter() - t0) * 1000
 
 
@@ -120,7 +121,7 @@ def test_a_rejected_or_failed_request_frees_its_slot():
     ensemble = FakeEnsemble()
     app = _app(ensemble, running=1, queued=0)
     with live_server(app) as base:
-        bad = httpx.post(
+        bad = httpx2.post(
             base + "/predict",
             data={**VALID_FORM, "sex": "unknown"},
             files={"derm_image": ("d.jpg", image_bytes(), "image/jpeg")},
@@ -128,3 +129,44 @@ def test_a_rejected_or_failed_request_frees_its_slot():
         assert bad.status_code == 422
         assert [_post(base).status_code for _ in range(3)] == [200, 200, 200]
     assert (app.state.limiter.running, app.state.limiter.waiting) == (0, 0)
+
+
+def _raw_post(base: str) -> socket.socket:
+    """Send a complete /predict request on a raw socket and return the socket (the caller closes it = disconnects)."""
+    request = httpx2.Request(
+        "POST", base + "/predict", data=VALID_FORM, files={"derm_image": ("d.jpg", image_bytes(), "image/jpeg")}
+    )
+    body = request.read()
+    head = (
+        f"POST /predict HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: {request.headers['content-type']}\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+    )
+    sock = socket.create_connection(("127.0.0.1", int(base.rsplit(":", 1)[1])))
+    sock.sendall(head.encode() + body)
+    return sock
+
+
+def test_capacity_is_fully_back_after_queued_clients_disconnect():
+    """Queued clients that disconnect do not leak slots. (Observed 2026-11-14, not asserted here: they stay queued
+    until a slot frees and their predictions still run; see qa.md M13.)"""
+    ensemble = BlockingEnsemble()
+    app = _app(ensemble, running=1, queued=2)
+    limiter = app.state.limiter
+    with live_server(app) as base, ThreadPoolExecutor(3) as pool:
+        first = pool.submit(_post, base)
+        _wait_until(lambda: ensemble.active == 1, "1 running")
+        gone = [_raw_post(base) for _ in range(2)]
+        _wait_until(lambda: limiter.waiting == 2, "2 queued")
+        for sock in gone:
+            sock.close()
+        ensemble.release.set()
+        assert first.result().status_code == 200
+        _wait_until(lambda: limiter.running == 0 and limiter.waiting == 0, "all slots free")
+        ensemble.release.clear()
+        again = [pool.submit(_post, base) for _ in range(3)]
+        _wait_until(lambda: ensemble.active == 1 and limiter.waiting == 2, "1 running and 2 queued again")
+        overflow = _post(base)
+        ensemble.release.set()
+        statuses = [f.result().status_code for f in again]
+    assert overflow.status_code == 503 and statuses == [200, 200, 200]
+    assert (limiter.running, limiter.waiting) == (0, 0)

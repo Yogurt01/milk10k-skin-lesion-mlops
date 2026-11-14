@@ -3,4 +3,4 @@
 pytest
 pytest-cov  # coverage XML report + threshold (P1-TST-07)
 ruff
-httpx  # FastAPI TestClient
+httpx2  # Starlette TestClient (preferred over httpx since Starlette 1.10) and the live-server tests

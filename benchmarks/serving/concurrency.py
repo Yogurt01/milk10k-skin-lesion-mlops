@@ -20,7 +20,7 @@ import statistics
 import time
 from pathlib import Path
 
-import httpx
+import httpx2
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "training" / "sample"
@@ -60,7 +60,7 @@ def pct(values: list[float], q: float) -> float:
 
 
 async def run_level(base: str, pid: int, payloads, concurrency: int, n_requests: int) -> dict:
-    async with httpx.AsyncClient(base_url=base, timeout=300) as client:
+    async with httpx2.AsyncClient(base_url=base, timeout=300) as client:
         for form, files in payloads[:2]:  # warm-up
             (await client.post("/predict", data=form, files=files)).raise_for_status()
         latencies, statuses, health_ms, rss = [], {}, [], []
@@ -114,7 +114,7 @@ def main() -> None:
     ap.add_argument("--requests", type=int, default=24, help="requests per level")
     ap.add_argument("--label", default="run")
     args = ap.parse_args()
-    ready = httpx.get(args.base_url + "/ready").json()
+    ready = httpx2.get(args.base_url + "/ready").json()
     payloads = sample_requests()
     env = {
         k: os.environ.get(k, "")

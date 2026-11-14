@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-import httpx
+import httpx2
 import uvicorn
 
 
@@ -28,9 +28,9 @@ def live_server(app, ready_timeout: float = 120.0) -> Iterator[str]:
     try:
         while True:
             try:
-                if httpx.get(base + "/ready", timeout=5).status_code == 200:
+                if httpx2.get(base + "/ready", timeout=5).status_code == 200:
                     break
-            except httpx.TransportError:
+            except httpx2.TransportError:
                 pass
             if time.monotonic() > deadline or not thread.is_alive():
                 raise RuntimeError(f"server on {base} not ready within {ready_timeout} s")

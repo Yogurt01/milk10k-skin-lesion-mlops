@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 
 from milk10k_serving.api import create_app
@@ -50,7 +50,7 @@ def lesion_request(row: dict, derm: bytes | None, clinical: bytes | None) -> tup
     return form, files
 
 
-def post(client: httpx.Client, form: dict, files: dict) -> dict:
+def post(client: httpx2.Client, form: dict, files: dict) -> dict:
     response = client.post("/predict", data=form, files=files)
     assert response.status_code == 200, response.text
     return response.json()
@@ -63,7 +63,7 @@ def as_row(body: dict) -> dict[str, float]:
 
 def test_sample_lesions_through_http_match_the_reference(base_url, sample_lesions, reference):
     worst, checked = 0.0, 0
-    with httpx.Client(base_url=base_url, timeout=120) as client:
+    with httpx2.Client(base_url=base_url, timeout=120) as client:
         for row in sample_lesions:
             body = post(client, *lesion_request(row, row["derm_image_bytes"], row["clinical_image_bytes"]))
             values = list(as_row(body).values())
@@ -99,7 +99,7 @@ def test_all_479_reference_lesions_through_http(base_url, dataset_dir, reference
         clinical = dataset_dir / row["clinical_image_path"] if row["clinical_image_path"].strip() else None
         derm = (dataset_dir / row["derm_image_path"]).read_bytes()
         form, files = lesion_request(row, derm, clinical.read_bytes() if clinical and clinical.is_file() else None)
-        with httpx.Client(base_url=base_url, timeout=300) as client:
+        with httpx2.Client(base_url=base_url, timeout=300) as client:
             return row["isic_id"], post(client, form, files)
 
     t0 = time.perf_counter()
