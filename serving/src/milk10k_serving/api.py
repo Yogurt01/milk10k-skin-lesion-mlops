@@ -509,7 +509,7 @@ def create_app(settings: Settings | None = None, loader: Callable[[], Predictor]
     settings = settings or load_settings()
     _configure_logging(settings.log_level)
     if not IMAGE_PIXEL_CAP_APPLIED:
-        logger.warning("cv2 was imported before milk10k_serving.preprocess: OPENCV_IO_MAX_IMAGE_PIXELS may not apply")
+        logger.error("decoded-image cap not applied: cv2 was imported before milk10k_serving.preprocess")
     state = ModelState(loader or default_loader(settings), model_dir=settings.model_dir)
 
     @asynccontextmanager

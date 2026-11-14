@@ -14,6 +14,7 @@ Source of truth: `training/src/milk10k/dataset.py` (`derm_transforms` / `clinica
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import sys
@@ -25,8 +26,17 @@ from .settings import MAX_IMAGE_PIXELS_DEFAULT
 # Decoded-image cap (P1-API-09). OpenCV reads OPENCV_IO_MAX_IMAGE_PIXELS once, when cv2 is first imported (measured:
 # setting it after the import has no effect), and rejects a larger image before allocating it. Without a cap a
 # 1.2 MB PNG decoded to 20000 x 20000 x 3 and the process grew by ~2.3 GiB. Set the default before the import.
-IMAGE_PIXEL_CAP_APPLIED = "cv2" not in sys.modules  # False if something imported cv2 before this module
+# If cv2 was imported earlier without the variable, OpenCV's own (much higher) default applies: say so loudly.
+_CAP_ALREADY_SET = "OPENCV_IO_MAX_IMAGE_PIXELS" in os.environ
+IMAGE_PIXEL_CAP_APPLIED = "cv2" not in sys.modules or _CAP_ALREADY_SET
 os.environ.setdefault("OPENCV_IO_MAX_IMAGE_PIXELS", str(MAX_IMAGE_PIXELS_DEFAULT))
+if not IMAGE_PIXEL_CAP_APPLIED:
+    logging.getLogger(__name__).error(
+        "cv2 was imported before milk10k_serving.preprocess and OPENCV_IO_MAX_IMAGE_PIXELS was not set: the "
+        "decoded-image cap of %d pixels is NOT applied (OpenCV's default applies). Import milk10k_serving first or "
+        "set OPENCV_IO_MAX_IMAGE_PIXELS in the environment.",
+        MAX_IMAGE_PIXELS_DEFAULT,
+    )
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402

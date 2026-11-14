@@ -129,3 +129,26 @@ def test_pixel_cap_comes_from_the_environment_at_import():
     result = subprocess.run([sys.executable, "-c", code], env=env, cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "rejected"
+
+
+@pytest.mark.parametrize("env_cap", [None, "1000"])
+def test_cv2_imported_first_is_reported_unless_the_cap_was_already_set(env_cap):
+    """Clean subprocess: cv2 imported before milk10k_serving. Without the variable the cap cannot apply and an error is
+    logged at import (stderr, no logging setup needed); with it, OpenCV read it at its own import, so it applies."""
+    code = (
+        "import cv2\n"
+        "from milk10k_serving import preprocess\n"
+        "from tests.fakes import blank_png\n"
+        "print('applied' if preprocess.IMAGE_PIXEL_CAP_APPLIED else 'not applied')\n"
+        "try:\n    preprocess.decode_rgb(blank_png(40, 40))\n    print('decoded')\n"
+        "except preprocess.ImageTooLarge:\n    print('rejected')\n"
+    )
+    env = {"PATH": ""} | ({"OPENCV_IO_MAX_IMAGE_PIXELS": env_cap} if env_cap else {})
+    result = subprocess.run([sys.executable, "-c", code], env=env, cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    if env_cap is None:
+        assert result.stdout.split() == ["not", "applied", "decoded"]
+        assert "decoded-image cap of 25000000 pixels is NOT applied" in result.stderr
+    else:
+        assert result.stdout.split() == ["applied", "rejected"]
+        assert "NOT applied" not in result.stderr
