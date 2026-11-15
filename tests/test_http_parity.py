@@ -5,6 +5,9 @@ predictions (`final-P1a-kg.csv`) within 0.002.
 - P1-TST-08: all 479 reference test lesions with their stored metadata (needs the prepared MILK10k dataset via
   MILK10K_DATA_DIR; skipped without it, also under REQUIRE_MODEL_PACKAGE=1, because CI never needs the full set).
   Writes a summary to reports/parity_full.json (gitignored).
+- P1-TST-05: with API_BASE_URL set (e.g. http://127.0.0.1:8000, the Compose stack), the same tests talk to that
+  running server instead of starting uvicorn here; no model package is loaded in the test process
+  (`make test-container`).
 
 Request mapping (same as the in-process parity test): dermoscopic image bytes; the clinical image if its path is set
 and the file exists; the four metadata fields as stored, empty ones omitted (the API encodes them as missing).
@@ -27,16 +30,24 @@ from milk10k_serving.predictor import Predictor
 from milk10k_serving.settings import Settings
 
 from .conftest import PARITY_TOLERANCE, ROOT
-from .live_server import live_server
+from .live_server import live_server, wait_until_ready
 
 pytestmark = [pytest.mark.parity, pytest.mark.slow]
 METADATA = ("age_approx", "sex", "anatomical_site_general", "fitzpatrick_type")
 REPORT = ROOT / "reports" / "parity_full.json"
+EXTERNAL_BASE_URL = os.environ.get("API_BASE_URL", "").strip().rstrip("/")
 
 
 @pytest.fixture(scope="module")
-def base_url(loaded_package, model_dir):
-    """Real uvicorn server on the already-loaded package (one model in memory), default concurrency settings."""
+def base_url(request):
+    """API_BASE_URL if set (a running server, e.g. the container); otherwise a real uvicorn server in this process on
+    the already-loaded package (one model in memory), default concurrency settings."""
+    if EXTERNAL_BASE_URL:
+        wait_until_ready(EXTERNAL_BASE_URL, timeout=120)
+        yield EXTERNAL_BASE_URL
+        return
+    loaded_package = request.getfixturevalue("loaded_package")
+    model_dir = request.getfixturevalue("model_dir")
     app = create_app(Settings(model_dir=model_dir), loader=lambda: Predictor(loaded_package))
     with live_server(app) as base:
         yield base
@@ -90,7 +101,7 @@ def dataset_dir() -> Path:
     return path
 
 
-def test_all_479_reference_lesions_through_http(base_url, dataset_dir, reference, loaded_package):
+def test_all_479_reference_lesions_through_http(base_url, dataset_dir, reference):
     with open(dataset_dir / "test_metadata.csv", newline="") as fh:
         rows = list(csv.DictReader(fh))
     assert len(rows) == len(reference) == 479 and {r["isic_id"] for r in rows} == set(reference)
@@ -102,6 +113,7 @@ def test_all_479_reference_lesions_through_http(base_url, dataset_dir, reference
         with httpx2.Client(base_url=base_url, timeout=300) as client:
             return row["isic_id"], post(client, form, files)
 
+    ready = httpx2.get(base_url + "/ready", timeout=10).json()
     t0 = time.perf_counter()
     with ThreadPoolExecutor(2) as pool:  # = MAX_CONCURRENT_PREDICTIONS default: nothing waits in the queue
         bodies = dict(pool.map(one, rows))
@@ -132,8 +144,12 @@ def test_all_479_reference_lesions_through_http(base_url, dataset_dir, reference
         "clinical_image_used": sum(b["clinical_image_used"] for b in bodies.values()),
         "seconds_total": round(seconds, 1),
         "client_threads": 2,
-        "server": "uvicorn in-process thread, real HTTP on 127.0.0.1, default settings",
-        "model": f"{loaded_package.name} {loaded_package.version}",
+        "server": (
+            f"external server at {EXTERNAL_BASE_URL} (API_BASE_URL)"
+            if EXTERNAL_BASE_URL
+            else "uvicorn in-process thread, real HTTP on 127.0.0.1, default settings"
+        ),
+        "model": f"{ready['model']} {ready['model_version']}",
         "python": platform.python_version(),
         "machine": {"cpu": platform.processor() or platform.machine(), "logical_cpus": os.cpu_count()},
     }
