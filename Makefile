@@ -6,8 +6,9 @@ SERVING_PY := serving/.venv/bin/python
 NOTEBOOK_PY := notebooks/.venv/bin/python
 PYTEST_FAST := -m "not parity and not slow"
 COV_MIN ?= 90
+API_BASE_URL ?= http://127.0.0.1:8000
 
-.PHONY: help setup setup-notebooks test test-all test-report lint format hygiene serve export bench up down k8s-deploy tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report test-container lint format hygiene serve fetch-model export bench up down k8s-deploy tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -31,6 +32,9 @@ test-report: ## Fast tests + JUnit XML and coverage XML in reports/ (fails below
 	$(SERVING_PY) -m pytest $(PYTEST_FAST) --junit-xml=reports/junit.xml \
 		--cov=milk10k_serving --cov-report=xml:reports/coverage.xml --cov-report=term --cov-fail-under=$(COV_MIN)
 
+test-container: ## HTTP parity (sample lesions) against a running API at API_BASE_URL (default: the Compose port)
+	API_BASE_URL=$(API_BASE_URL) $(SERVING_PY) -m pytest -m parity tests/test_http_parity.py
+
 lint: ## Ruff lint + format check
 	$(SERVING_PY) -m ruff check .
 	$(SERVING_PY) -m ruff format --check .
@@ -41,6 +45,9 @@ format: ## Apply ruff formatting and safe fixes
 
 hygiene: ## No data, images, weights or secrets in git (index + untracked files)
 	python3 scripts/check_repo_hygiene.py --untracked notebooks/08_export_for_deployment.ipynb
+
+fetch-model: ## Download the model package from the GitHub Release (~1.4 GB, resumable) and verify every sha256
+	scripts/fetch_model.sh
 
 serve: ## Run the API locally on port 8000 (needs the model package in MODEL_DIR)
 	$(SERVING_PY) -m uvicorn milk10k_serving.api:app --host 0.0.0.0 --port 8000
@@ -54,11 +61,11 @@ bench: ## Serving measurements (docs/serving_measurements.md); needs MILK10K_DAT
 	training/.venv/bin/python benchmarks/serving/variants.py
 	$(NOTEBOOK_PY) benchmarks/serving/export.py
 
-up: ## Docker Compose stack (not yet implemented: P1-DCK-07)
-	@echo "not yet implemented: P1-DCK-07" >&2; exit 1
+up: fetch-model ## Compose stack (API for now): fetch + verify the model, build, start, wait until healthy
+	docker compose up -d --build --wait
 
-down: ## Stop the Compose stack (not yet implemented: P1-DCK-07)
-	@echo "not yet implemented: P1-DCK-07" >&2; exit 1
+down: ## Stop the Compose stack; removes its containers and network
+	docker compose down
 
 k8s-deploy: ## Helm deploy to minikube (not yet implemented: P1-K8S-06)
 	@echo "not yet implemented: P1-K8S-06" >&2; exit 1

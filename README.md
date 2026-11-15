@@ -5,6 +5,21 @@
 
 **Status:** work in progress.
 
+## Run with Docker Compose
+
+Needs Docker with Compose v2, `curl` and `python3`. From the repository root:
+
+```bash
+make up      # downloads the model package (~1.4 GB, once; sha256-checked), builds the image, waits until healthy
+curl -s localhost:8000/ready
+make down
+```
+
+- **Model download:** `make up` runs `scripts/fetch_model.sh`, which downloads the model package from the GitHub Release [`model-v1.0.0`](https://github.com/Yogurt01/milk10k-skin-lesion-mlops/releases/tag/model-v1.0.0) into `artifacts/model_package/final-P1a-kg-onnx/`. Interrupted downloads resume; files already verified are skipped.
+- **Model files:** the model package (CC BY-NC 4.0, non-commercial) is not in the image. Compose mounts it read-only.
+- **Network:** the API listens on `127.0.0.1:8000` only.
+- **Settings:** optional; `cp .env.example .env` and edit.
+
 ## API
 
 FastAPI service in [`serving/`](serving/) (`milk10k_serving.api`). Start it from the repository root with

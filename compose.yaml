@@ -1,0 +1,50 @@
+# Local stack (P1-DCK-03..07). One command: `make up` (fetches and verifies the model package, then
+# `docker compose up -d --build --wait`); `make down` stops it. Settings: copy .env.example to .env (optional).
+# Currently the API only; Prometheus, Grafana, Jaeger, node-exporter and cAdvisor follow (P1-OBS-03..07).
+# Research model, not a medical device. Model package: CC BY-NC 4.0, non-commercial ("MILK study team").
+name: milk10k
+
+services:
+  api:
+    # No container_name and no fixed hostname, so the service can run as 2+ replicas later (the [EXT] nginx profile);
+    # only the published host port below would then move to the load balancer.
+    build:
+      context: ./serving
+    image: milk10k-api:dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # The container path of the read-only mount below; overrides a host-side MODEL_DIR from .env.
+      MODEL_DIR: /models/final-P1a-kg-onnx
+    volumes:
+      - type: bind
+        source: ${MODEL_HOST_DIR:-./artifacts/model_package/final-P1a-kg-onnx}
+        target: /models/final-P1a-kg-onnx
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    healthcheck:
+      # Same check as the image's HEALTHCHECK: /ready on the container port, Python standard library (no curl).
+      test: ["CMD", "python", "-c", "import sys, urllib.request as u; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/ready', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # Measured RSS 2.0-2.5 GiB (docs/serving_measurements.md §1, §7, §9) + up to ~160 MiB of queued uploads,
+          # with headroom; see the Decision log (memory limit).
+          memory: ${API_MEMORY_LIMIT:-3g}
+    # Same value as the limit = no swap for the container (Docker's default allows as much swap again as the limit, so
+    # an overrun would page out to the host's swap instead of failing visibly; measured 2026-11-15).
+    memswap_limit: ${API_MEMORY_LIMIT:-3g}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

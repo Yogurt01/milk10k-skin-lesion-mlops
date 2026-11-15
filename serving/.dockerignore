@@ -1,0 +1,17 @@
+# Build context of the API image is serving/ (P1-DCK-01), so the repository's .git, private/, training/, notebooks/,
+# artifacts/ (model package), reports/ and the dataset are never sent to the builder.
+# Allowlist: exclude everything, then re-include only what the Dockerfile copies.
+*
+!requirements.txt
+!pyproject.toml
+!README.md
+!src/
+# never inside the image, even if they appear under src/
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.venv
+**/.env
+**/.env.*
+**/*.onnx
+**/*.pth
