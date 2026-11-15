@@ -10,15 +10,28 @@
 Needs Docker with Compose v2, `curl` and `python3`. From the repository root:
 
 ```bash
-make up      # downloads the model package (~1.4 GB, once; sha256-checked), builds the image, waits until healthy
+make up      # creates .env (random Grafana password) if missing, downloads the model package (~1.4 GB, once;
+             # sha256-checked), builds the API image, starts the stack and waits until every service is healthy
 curl -s localhost:8000/ready
-make down
+make down    # stops it (Prometheus and Grafana data volumes are kept; `docker compose down -v` removes them)
 ```
+
+| Service | URL (127.0.0.1 only) | What |
+|---|---|---|
+| API | http://localhost:8000 | `/health`, `/ready`, `/predict`, `/metrics`, `/docs` |
+| Prometheus | http://localhost:9090 | scrapes the API, node-exporter, cAdvisor and itself; alert rules at `/alerts` |
+| Grafana | http://localhost:3000 | dashboard "MILK10k: machine resources and API"; user `admin`, password = `GRAFANA_ADMIN_PASSWORD` in `.env` |
+| Jaeger | http://localhost:16686 | traces of `/predict` (service `milk10k-api`) |
 
 - **Model download:** `make up` runs `scripts/fetch_model.sh`, which downloads the model package from the GitHub Release [`model-v1.0.0`](https://github.com/Yogurt01/milk10k-skin-lesion-mlops/releases/tag/model-v1.0.0) into `artifacts/model_package/final-P1a-kg-onnx/`. Interrupted downloads resume; files already verified are skipped.
 - **Model files:** the model package (CC BY-NC 4.0, non-commercial) is not in the image. Compose mounts it read-only.
 - **Network:** the API listens on `127.0.0.1:8000` only.
-- **Settings:** optional; `cp .env.example .env` and edit.
+- **Settings:** `.env` (gitignored; template `.env.example`). `make env` creates it with a random Grafana admin password;
+  Compose refuses to start without one (no `admin/admin` fallback).
+- **Monitoring configuration:** [`monitoring/`](monitoring/) (Prometheus scrape config and alert rules, Grafana
+  provisioning and dashboard, Jaeger configuration). node-exporter and cAdvisor read host folders read-only; cAdvisor
+  also reads the Docker and containerd sockets to name containers, which gives it control over Docker (see
+  `compose.yaml`).
 
 ## API
 
@@ -31,6 +44,7 @@ loads in the background, so `/ready` turns 200 a few seconds after start. Intera
 | `GET /health` | Liveness: always 200 while the process runs (also while loading and under overload) |
 | `GET /ready` | Readiness: 200 once the model is loaded and verified, 503 while loading or after a failed load |
 | `POST /predict` | One lesion: dermoscopic image (required), clinical image (optional), metadata → P(malignant), 11 class probabilities, diagnosis, `disclaimer` |
+| `GET /metrics` | Prometheus metrics: requests by route template / method / status, latency histogram, running and waiting predictions, 503-busy rejections, model readiness and load time, stage durations, P(malignant) histogram |
 | `GET /docs`, `GET /openapi.json` | OpenAPI documentation, including the allowed metadata values once the model is loaded |
 
 ```bash
@@ -74,6 +88,10 @@ Allowed values come from the model package's `tabular_encoding.json`.
   `/predict` gets 503, even one with an invalid field.
 - **Overload:** at most `MAX_CONCURRENT_PREDICTIONS` predictions run at once and `MAX_QUEUED_PREDICTIONS` more wait;
   further requests get 503 with `Retry-After` at once. Overload is not "not ready": `/ready` stays 200.
+- **Tracing:** with `OTEL_EXPORTER_OTLP_ENDPOINT` set (the Compose stack sets `http://jaeger:4318`), each `/predict`
+  becomes one trace: server span, `queue_wait`, `validate_input`, `decode`, `preprocess`, `inference` (one span per
+  ensemble member) and `assemble_response`. Spans carry counts and flags, never images or metadata values. A stopped
+  Jaeger never breaks `/predict`.
 - **Request ids:** every response carries `X-Request-ID` (the client's value if it is 1-64 characters of
   `[A-Za-z0-9._:-]`, otherwise a generated one); the server's log lines for that request carry it too. Logs contain
   ids, sizes, status and latency, never images or metadata values.

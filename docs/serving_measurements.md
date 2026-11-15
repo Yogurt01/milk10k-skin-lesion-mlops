@@ -287,6 +287,94 @@ exist (set MODEL_DIR)`; the full path only in the log. A host folder that does n
 
 Container parity: [parity_full.md](parity_full.md) (sample lesions 2.55e-4, 479 / 479 within 0.002, max 1.096e-3).
 
+## 10. Monitoring stack: metrics, dashboards, traces (M6b, 2026-11-15)
+
+The whole Compose stack ([`compose.yaml`](../compose.yaml), `make up`): the API plus Prometheus, node-exporter,
+cAdvisor, Grafana and Jaeger, configured from [`monitoring/`](../monitoring/). Same laptop and API defaults as §9.
+
+- **Load:** Chrome and VS Code were running. `free -h` at the start of the session: 8.6 GiB available, 3.2 GiB of the 4 GiB swap already used by other processes.
+- **Noise:** one run per configuration unless stated; the tracing comparison was run twice per mode.
+
+**Images** (pinned by tag and digest in `compose.yaml`):
+
+| Service | Image | Size |
+|---|---|---:|
+| api | `milk10k-api:dev` (now with prometheus-client and OpenTelemetry) | 636,982,455 bytes (+15.2 MB vs §9) |
+| prometheus | `prom/prometheus:v3.16.0` | 389 MB |
+| node-exporter | `prom/node-exporter:v1.12.1` | 41 MB |
+| cadvisor | `ghcr.io/google/cadvisor:v0.60.6` | 107 MB |
+| grafana | `grafana/grafana:13.3.1` | 2,017 MB |
+| jaeger | `jaegertracing/jaeger:2.23.0` | 180 MB |
+
+**Startup** (`docker compose down -v`, then `docker compose up -d --wait`, images present):
+
+| Event | Time |
+|---|---|
+| `up --wait` returns (every service with a healthcheck healthy; Jaeger has none) | 15.6 s, 17.3 s (final configuration); 15.4 s in a first run |
+| All 4 Prometheus targets `up` (`/api/v1/targets`: api, node, cadvisor, prometheus) | 20.9 s, 19.0 s after `up` started |
+| Grafana right after: provisioned dashboard (15 panels) via its API | 200 with the `.env` password; `admin:admin` → 401 |
+
+**Memory and CPU** (`docker stats --no-stream`; limits with swap off for every service):
+
+| Service | Idle: CPU / memory | Under c = 2 (40 requests, 6 samples): max CPU / max memory | Limit |
+|---|---:|---:|---:|
+| api | 0.97 % / 1.803 GiB | 570 % / 2,147 MiB | 3 GiB |
+| prometheus | 0.82 % / 57.4 MiB | 0.6 % / 58.4 MiB | 512 MiB |
+| grafana | 3.01 % / 255.4 MiB | 0.9 % / 255.6 MiB | 512 MiB |
+| cadvisor | 2.88 % / 20.4 MiB | 0.6 % / 20.8 MiB | 256 MiB |
+| node-exporter | 2.89 % / 11.0 MiB | 0.8 % / 11.0 MiB | 128 MiB |
+| jaeger | 0.19 % / 13.4 MiB | 0.1 % / 14.5 MiB | 512 MiB |
+| **Sum** | **≈ 2.16 GiB** | **≈ 2.47 GiB** | **4.88 GiB** |
+
+- **Host** (`free -h`): idle with the stack running, 6.0 GiB available; under the c = 2 run, 5.7 GiB available; swap 3.1 GiB used (by other processes, as at the start).
+- **Fits:** yes. The five monitoring services add about 0.36 GiB to the API; the host kept ≥ 5.7 GiB available with Chrome and VS Code open. The limits leave 2–12× headroom over the measured use (least for Grafana: 256 of 512 MiB).
+- **Not measured:** Jaeger at its trace cap (10,000 traces in memory), Prometheus after days of retention (7 d / 1 GB), Grafana with several dashboards open in a browser.
+- **c = 2 latency** (same run): 40 × 200, p50 1.018 s, p95 1.053 s, 1.97 req/s; `/health` max 14.1 ms.
+
+**Tracing overhead** (c = 1, 30 requests per run, `benchmarks/serving/concurrency.py`, API recreated with
+`API_OTLP_ENDPOINT` set or empty; Jaeger running):
+
+| Run | Tracing on: p50 / p95 | Tracing off: p50 / p95 |
+|---|---:|---:|
+| 1 | 0.519 / 0.568 s | 0.536 / 0.566 s |
+| 2 | 0.536 / 0.572 s | 0.529 / 0.566 s |
+
+The on/off difference (at most 17 ms on p50, 6 ms on p95) is no larger than the run-to-run spread (17 ms on p50 with
+tracing on): no overhead is measurable at this resolution. One trace has 22 spans (server span, 6 stages, 15
+ensemble members).
+
+**Fail-soft** (Jaeger stopped, 10 sequential `/predict`): 10 × 200, max 0.548 s, mean 0.513 s; the API logged the
+failed exports at WARNING; `/ready` stayed 200.
+
+**Alert** (`ApiHighErrorRate`, 5xx share of `/predict` > 10 % for 1 min): 32 rounds of 15 parallel requests →
+320 × 200 + 160 × 503; pending after ~30 s, firing after ~90 s (value 0.31–0.34); gone ~60 s after the burst ended.
+`ApiHighLatencyP95` went pending (p95 5.1–5.7 s) but the burst was shorter than its 5 min `for`.
+
+**Outbound connections** (each new service, started fresh, nothing else talking to it):
+
+| Check | Result |
+|---|---|
+| `/proc/net/tcp` of each service's network namespace, every 1 s for 90 s (the M6a method) | no public remote address for any service |
+| Control: Grafana with its defaults, same method | none either: the method misses short connections |
+| Header-only capture (outgoing TCP SYN + DNS question names) in the namespace, 120 s, Grafana with its defaults | 6 SYN to 34.120.177.193:443 (= the DNS answer for `grafana.com`); DNS questions `grafana.com` ×6, `storage.googleapis.com` ×34 |
+| Same capture, 150 s, the five stack services with the stack's settings (Grafana: analytics, update checks, plugin preinstall, plugin key download off) | no SYN to a public address for any service (1–6 SYN each, all to private addresses) |
+| Same capture on the API container, 60 s, with 10 requests while Jaeger was stopped | no SYN to a public address |
+
+- **DNS column:** on Compose networks, lookups go to Docker's resolver on 127.0.0.11 (loopback), which this capture does not see. Only the default-bridge control shows DNS questions.
+- **Not checked:** connections after 150 s (e.g. Grafana's periodic checks); node-exporter and cAdvisor are only on the internal network, which has no route out.
+
+**onnxruntime telemetry on the host** (P1-API-13; the M6a method restricted to one process's sockets):
+
+| Run (serving venv, `ORT_DISABLE_TELEMETRY` unset in the environment) | Remote connections, 15–20 samples, 1 s apart |
+|---|---|
+| Plain `import onnxruntime` + one session | 74.144.159.198:443 (run 1), 74.144.159.203:443 (run 2) |
+| Variable set in the process after `import onnxruntime`, before the session | 74.151.238.140:443: setting it after the import does not help |
+| `import milk10k_serving.package` first (sets the default), then a session | none (2/2 runs) |
+| `make serve` with the real package, after `/ready` 200 and one `/predict` | none (20 samples) |
+
+The addresses differ from the DNS answer for `mobile.events.data.microsoft.com` at that time (4.150.223.99); they are
+attributed to the telemetry client because they appear only while it is enabled. Payload not inspected.
+
 ## How to reproduce
 
 Run from the repository root, with `MILK10K_DATA_DIR` pointing at the prepared dataset and the 15 checkpoints in
@@ -307,6 +395,13 @@ behaviour is covered by `tests/test_preprocess.py` and `tests/test_api.py`.
 §9: `make fetch-model` (or `scripts/fetch_model.sh <dir>`), `make up`, then the §7 command with
 `--pid $(docker inspect milk10k-api-1 --format '{{.State.Pid}}') --levels 1 2 --label container` and
 `docker stats --no-stream`; container parity: `make test-container` (see [parity_full.md](parity_full.md)).
+
+§10: `make up`; targets with `curl -s localhost:9090/api/v1/targets`; the §7 command with `--levels 2 --requests 40`
+while running `docker stats --no-stream`; tracing off for a run with `API_OTLP_ENDPOINT= docker compose up -d --wait
+api` (on again: `docker compose up -d --wait api`); traces from `localhost:16686/api/v3/traces?query.service_name=
+milk10k-api&query.start_time_min=…&query.start_time_max=…`. The outbound-connection captures and the overload loop for
+the alert used temporary scripts outside the repository (header-only capture in a helper container sharing each
+service's network namespace).
 
 Each script writes a JSON file with every number in this document to `benchmarks/serving/out/` (gitignored). The
 end-to-end ONNX latency in §5 comes from notebook 08 and the `milk10k_serving` predictor. A re-run on 2026-11-09
