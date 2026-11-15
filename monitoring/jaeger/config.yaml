@@ -1,0 +1,55 @@
+# Jaeger v2 all-in-one for the local Compose stack (P1-OBS-06). Mounted read-only; replaces the image's built-in
+# configuration, which also enables the Jaeger/Zipkin receivers, remote sampling, an MCP endpoint and debug pages.
+# Kept: OTLP over HTTP (4318, internal network only), in-memory storage with a cap, the UI/API (16686; the JSON API is
+# /api/v3, the legacy /api/traces is gone in 2.23) and a health endpoint (13133). Traces are lost when the container stops.
+service:
+  extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+  telemetry:
+    resource:
+      service.name: jaeger
+    logs:
+      level: info
+
+extensions:
+  jaeger_storage:
+    backends:
+      memory_store:
+        memory:
+          # The image's default is 100,000 traces; a capped store keeps memory bounded (a /predict trace is ~25 spans).
+          max_traces: 10000
+
+  jaeger_query:
+    storage:
+      traces: memory_store
+    http:
+      endpoint: 0.0.0.0:16686
+    grpc:
+      endpoint: 0.0.0.0:16685
+
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      # Loopback only (not reachable from other containers): an internal client of Jaeger dials localhost:4317
+      # (component not identified) and logs a connection error every second when nothing listens there. The image's
+      # own configuration opens 4317 on all interfaces.
+      grpc:
+        endpoint: 127.0.0.1:4317
+
+processors:
+  batch:
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: memory_store

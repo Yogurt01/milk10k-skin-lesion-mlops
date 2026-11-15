@@ -1,13 +1,42 @@
-# Local stack (P1-DCK-03..07). One command: `make up` (fetches and verifies the model package, then
-# `docker compose up -d --build --wait`); `make down` stops it. Settings: copy .env.example to .env (optional).
-# Currently the API only; Prometheus, Grafana, Jaeger, node-exporter and cAdvisor follow (P1-OBS-03..07).
+# Local stack (P1-DCK-03..07, P1-OBS-03..07). One command: `make up` (creates .env with a random Grafana admin
+# password if it is missing, fetches and verifies the model package, then `docker compose up -d --build --wait`);
+# `make down` stops it. Settings: .env (template .env.example; never committed).
+# UIs, all on 127.0.0.1 only: API :8000, Prometheus :9090, Grafana :3000, Jaeger :16686.
 # Research model, not a medical device. Model package: CC BY-NC 4.0, non-commercial ("MILK study team").
 name: milk10k
 
+# Docker's json-file driver keeps container logs without a size limit by default: rotate them for every service.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Every service: no Linux capabilities unless listed, no privilege escalation (setuid binaries), swap off for the
+# memory limit (memswap_limit = limit; Docker's default allows as much swap again, which hid an overrun in M6a).
+x-hardening: &hardening
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *logging
+
+networks:
+  # Service-to-service traffic (scrapes, OTLP): internal, so it has no route to the internet. Services that publish a
+  # port on the host also join `default` (Docker publishes ports only on non-internal networks).
+  monitoring:
+    internal: true
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
 services:
   api:
+    <<: *hardening
     # No container_name and no fixed hostname, so the service can run as 2+ replicas later (the [EXT] nginx profile);
-    # only the published host port below would then move to the load balancer.
+    # Prometheus finds every replica through DNS service discovery. Only the published host port would move.
     build:
       context: ./serving
     image: milk10k-api:dev
@@ -17,6 +46,9 @@ services:
     environment:
       # The container path of the read-only mount below; overrides a host-side MODEL_DIR from .env.
       MODEL_DIR: /models/final-P1a-kg-onnx
+      # Traces over OTLP/HTTP to Jaeger on the internal network; API_OTLP_ENDPOINT= (empty) in .env turns tracing off.
+      # Fail-soft: a stopped Jaeger never breaks /predict.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${API_OTLP_ENDPOINT-http://jaeger:4318}
     volumes:
       - type: bind
         source: ${MODEL_HOST_DIR:-./artifacts/model_package/final-P1a-kg-onnx}
@@ -26,6 +58,7 @@ services:
           create_host_path: false
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
+    networks: [default, monitoring]
     healthcheck:
       # Same check as the image's HEALTHCHECK: /ready on the container port, Python standard library (no curl).
       test: ["CMD", "python", "-c", "import sys, urllib.request as u; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/ready', timeout=4).status == 200 else 1)"]
@@ -34,17 +67,176 @@ services:
       retries: 3
       start_period: 60s
       start_interval: 2s
-    restart: unless-stopped
     deploy:
       resources:
         limits:
           # Measured RSS 2.0-2.5 GiB (docs/serving_measurements.md §1, §7, §9) + up to ~160 MiB of queued uploads,
           # with headroom; see the Decision log (memory limit).
           memory: ${API_MEMORY_LIMIT:-3g}
-    # Same value as the limit = no swap for the container (Docker's default allows as much swap again as the limit, so
-    # an overrun would page out to the host's swap instead of failing visibly; measured 2026-11-15).
     memswap_limit: ${API_MEMORY_LIMIT:-3g}
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
+
+  prometheus:
+    <<: *hardening
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=1GB
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    networks: [default, monitoring]
+    depends_on:
+      api:
+        condition: service_healthy
+      node-exporter:
+        condition: service_healthy
+      cadvisor:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    deploy:
+      resources:
+        limits:
+          memory: ${PROMETHEUS_MEMORY_LIMIT:-512m}
+    memswap_limit: ${PROMETHEUS_MEMORY_LIMIT:-512m}
+
+  node-exporter:
+    <<: *hardening
+    image: prom/node-exporter:v1.12.1@sha256:1b4e4438faca4dd7e001dd445d161a4a2091b0fededa84093b3a8dfeae1f1be0
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(dev|proc|run|sys|var/lib/docker/.+)($$|/)
+      # These read the network namespace of the exporter itself (its container's eth0), not the host's: off, so no
+      # panel shows container traffic as host traffic. Host network comes from cAdvisor's root cgroup (id="/").
+      - --no-collector.netdev
+      - --no-collector.netstat
+      - --no-collector.sockstat
+      - --no-collector.arp
+    # Host folders, all read-only; no host network, no host PID namespace. Not published: Prometheus scrapes it on the
+    # internal network.
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - type: bind
+        source: /
+        target: /rootfs
+        read_only: true
+        bind:
+          propagation: rslave
+    networks: [monitoring]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9100/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s
+    deploy:
+      resources:
+        limits:
+          memory: ${NODE_EXPORTER_MEMORY_LIMIT:-128m}
+    memswap_limit: ${NODE_EXPORTER_MEMORY_LIMIT:-128m}
+
+  cadvisor:
+    <<: *hardening
+    image: ghcr.io/google/cadvisor:v0.60.6@sha256:b8e7d1093144fd088f425ff003d75a4aa405de075db78dae3bc563730b1bd07a
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+      - --enable_metrics=cpu,memory,network,diskIO
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service,com.docker.compose.project
+    # Host folders, all read-only; not privileged, no capabilities. The Docker and containerd sockets give container
+    # names and labels (Docker 29 with the containerd image store needs both; without them only the host total is
+    # reported). Read-only does NOT limit what can be requested through a socket: this container can control Docker
+    # (see the Decision log for the trade-off). Not published: Prometheus scrapes it on the internal network.
+    volumes:
+      - /:/rootfs:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro
+    networks: [monitoring]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    deploy:
+      resources:
+        limits:
+          memory: ${CADVISOR_MEMORY_LIMIT:-256m}
+    memswap_limit: ${CADVISOR_MEMORY_LIMIT:-256m}
+
+  grafana:
+    <<: *hardening
+    image: grafana/grafana:13.3.1@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      # No default: Compose stops with this message when it is unset or empty (Grafana would fall back to admin/admin).
+      # Applied when the Grafana database is created; with an existing grafana-data volume a new value has no effect.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env (make env creates one)}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # No calls home (names from the image's conf/defaults.ini): usage reporting, version and plugin update checks,
+      # plugin preinstall downloads, plugin-signature key download, Gravatar images, the news feed, feedback links.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    networks: [default, monitoring]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    deploy:
+      resources:
+        limits:
+          memory: ${GRAFANA_MEMORY_LIMIT:-512m}
+    memswap_limit: ${GRAFANA_MEMORY_LIMIT:-512m}
+
+  jaeger:
+    <<: *hardening
+    image: jaegertracing/jaeger:2.23.0@sha256:3823829974ccfc2485d2e48b165579091f32295022ae80ca49704e2f4834116e
+    command: ["--config=file:/etc/jaeger/config.yaml"]
+    volumes:
+      - ./monitoring/jaeger/config.yaml:/etc/jaeger/config.yaml:ro
+    # UI on the host (127.0.0.1); OTLP/HTTP 4318 only on the internal network (the API sends to jaeger:4318).
+    ports:
+      - "127.0.0.1:${JAEGER_UI_PORT:-16686}:16686"
+    networks: [default, monitoring]
+    # No healthcheck: the image has no shell, wget or curl (its health endpoint is :13133 on the internal network).
+    deploy:
+      resources:
+        limits:
+          memory: ${JAEGER_MEMORY_LIMIT:-512m}
+    memswap_limit: ${JAEGER_MEMORY_LIMIT:-512m}

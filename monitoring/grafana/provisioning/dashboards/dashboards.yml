@@ -1,0 +1,12 @@
+# Dashboard provider (P1-OBS-04/05): loads the JSON files mounted at /etc/grafana/dashboards at startup.
+apiVersion: 1
+
+providers:
+  - name: milk10k
+    orgId: 1
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false  # the files in git are the source; edits in the UI are not saved back
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

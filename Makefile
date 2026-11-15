@@ -8,7 +8,7 @@ PYTEST_FAST := -m "not parity and not slow"
 COV_MIN ?= 90
 API_BASE_URL ?= http://127.0.0.1:8000
 
-.PHONY: help setup setup-notebooks test test-all test-report test-container lint format hygiene serve fetch-model export bench up down k8s-deploy tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report test-container lint format hygiene serve fetch-model env export bench up down k8s-deploy tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -61,10 +61,15 @@ bench: ## Serving measurements (docs/serving_measurements.md); needs MILK10K_DAT
 	training/.venv/bin/python benchmarks/serving/variants.py
 	$(NOTEBOOK_PY) benchmarks/serving/export.py
 
-up: fetch-model ## Compose stack (API for now): fetch + verify the model, build, start, wait until healthy
+env: ## Create .env from .env.example with a random Grafana admin password (an existing .env is never changed)
+	@if [ -f .env ]; then echo ".env exists: not changed"; else \
+		python3 -c 'import re, secrets; text = open(".env.example").read(); print(re.sub(r"(?m)^GRAFANA_ADMIN_PASSWORD=.*$$", "GRAFANA_ADMIN_PASSWORD=" + secrets.token_urlsafe(24), text), end="")' > .env \
+		&& chmod 600 .env && echo "created .env (random Grafana admin password; it is only in .env)"; fi
+
+up: env fetch-model ## Compose stack: .env, fetch + verify the model, build, start, wait until every service is healthy
 	docker compose up -d --build --wait
 
-down: ## Stop the Compose stack; removes its containers and network
+down: ## Stop the Compose stack; removes its containers and networks (keeps the Prometheus and Grafana volumes)
 	docker compose down
 
 k8s-deploy: ## Helm deploy to minikube (not yet implemented: P1-K8S-06)

@@ -1,0 +1,33 @@
+# Prometheus for the local Compose stack (P1-OBS-03). Mounted read-only at /etc/prometheus/prometheus.yml.
+# Targets are reached by Compose service name on the internal `monitoring` network (container ports, not host ports).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alert-rules.yml  # relative to this file (/etc/prometheus/ in the container)
+
+scrape_configs:
+  # The API: DNS service discovery on the service name finds every replica (the [EXT] nginx profile runs 2), each
+  # labelled by its address; a single replica gives one target.
+  - job_name: api
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: [api]
+        type: A
+        port: 8000
+        refresh_interval: 15s
+
+  # Host: CPU, memory, disk, filesystems, network.
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # Containers: CPU, memory, disk I/O, network per container.
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["prometheus:9090"]

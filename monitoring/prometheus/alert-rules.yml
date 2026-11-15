@@ -1,0 +1,39 @@
+# Alert rules (P1-OBS-08), evaluated by Prometheus; visible at http://127.0.0.1:9090/alerts.
+# No Alertmanager in the local stack: alerts are shown in Prometheus only (no notifications).
+groups:
+  - name: milk10k-api
+    rules:
+      - alert: ApiDown
+        expr: up{job="api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API target {{ $labels.instance }} cannot be scraped"
+          description: "Prometheus has not reached /metrics of {{ $labels.instance }} for 1 minute."
+
+      # Share of /predict responses with a 5xx status, including 503 (model not ready, or busy: the limiter's queue
+      # was full). Needs some traffic: with no /predict requests the ratio is empty and the alert stays inactive.
+      - alert: ApiHighErrorRate
+        expr: |
+          sum(rate(milk10k_http_requests_total{route="/predict", status=~"5.."}[1m]))
+            / sum(rate(milk10k_http_requests_total{route="/predict"}[1m])) > 0.1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 10% of /predict responses are 5xx"
+          description: "5xx share of /predict over the last minute: {{ $value | humanizePercentage }}."
+
+      # p95 latency of /predict. One prediction takes ~0.6 s (docs/serving_measurements.md); a p95 above 3 s means
+      # requests wait in the queue (or the host is overloaded).
+      - alert: ApiHighLatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(milk10k_http_request_duration_seconds_bucket{route="/predict"}[5m]))) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency of /predict above 3 s"
+          description: "p95 of /predict over 5 minutes: {{ $value | humanizeDuration }}."

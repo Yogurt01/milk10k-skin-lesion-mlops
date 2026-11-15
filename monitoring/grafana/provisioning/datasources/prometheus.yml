@@ -1,0 +1,11 @@
+# Grafana data source, provisioned at startup (P1-OBS-04): no manual set-up.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus  # fixed uid: the provisioned dashboards refer to it
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
