@@ -8,3 +8,9 @@ fastapi
 pydantic  # imported directly by milk10k_serving.api
 python-multipart
 uvicorn
+prometheus-client  # /metrics (P1-OBS-01/02)
+# Tracing (P1-OBS-06/07): OTLP over HTTP to Jaeger, FastAPI instrumentation
+opentelemetry-api  # imported directly (trace API for manual spans)
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
+opentelemetry-instrumentation-fastapi

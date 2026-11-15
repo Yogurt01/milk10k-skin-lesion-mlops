@@ -12,3 +12,5 @@ PyTest suite for the serving code. Markers (see the root `pyproject.toml`): `uni
 Model files and sample lesions missing: the tests that need them are skipped, or fail with `REQUIRE_MODEL_PACKAGE=1` (CI). The 479-lesion run is skipped without `MILK10K_DATA_DIR` in either case.
 
 `API_BASE_URL`: when set, `test_http_parity.py` talks to that server instead of starting uvicorn in the test process (P1-TST-05). The 479-lesion test also runs that way when `MILK10K_DATA_DIR` is set too; it is a one-off check (about 4 minutes), not part of `make test`.
+
+Observability: `test_metrics.py` (`/metrics` format, counters on 200/422/503, busy counter, bounded labels with 1,000 random paths, answers while the threadpool is saturated) and `test_tracing.py` (span tree with an in-memory exporter, no request data in attributes, probes not traced, fail-soft with a collector that is down or never answers). `test_package.py` also checks the onnxruntime telemetry default in clean subprocesses.

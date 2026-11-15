@@ -8,16 +8,26 @@ anyio==4.16.0
     # via
     #   fastapi
     #   starlette
+asgiref==3.13.0
+    # via opentelemetry-instrumentation-asgi
+certifi==2026.10.23
+    # via requests
+charset-normalizer==3.5.2
+    # via requests
 click==8.5.1
     # via uvicorn
 fastapi==0.162.7
     # via -r requirements.in
 flatbuffers==25.12.19
     # via onnxruntime
+googleapis-common-protos==1.76.0
+    # via opentelemetry-exporter-otlp-proto-http
 h11==0.16.0
     # via uvicorn
 idna==3.20
-    # via anyio
+    # via
+    #   anyio
+    #   requests
 numpy==2.5.3
     # via
     #   -r requirements.in
@@ -28,11 +38,62 @@ onnxruntime==1.31.1
 opencv-python-headless==5.0.0.93
     # via -r requirements.in
 opentelemetry-api==1.45.2
-    # via fastapi
+    # via
+    #   -r requirements.in
+    #   fastapi
+    #   opentelemetry-exporter-http-transport
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+opentelemetry-exporter-http-transport==0.66b2
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-common==0.66b2
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-proto-common==1.45.2
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-proto-http==1.45.2
+    # via -r requirements.in
+opentelemetry-instrumentation==0.66b2
+    # via
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-asgi==0.66b2
+    # via opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-fastapi==0.66b2
+    # via -r requirements.in
+opentelemetry-proto==1.45.2
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-sdk==1.45.2
+    # via
+    #   -r requirements.in
+    #   opentelemetry-exporter-otlp-common
+    #   opentelemetry-exporter-otlp-proto-http
+opentelemetry-semantic-conventions==0.66b2
+    # via
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-sdk
+opentelemetry-util-http==0.66b2
+    # via
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
 packaging==26.3
-    # via onnxruntime
+    # via
+    #   onnxruntime
+    #   opentelemetry-instrumentation
+prometheus-client==0.26.0
+    # via -r requirements.in
 protobuf==7.36.2
-    # via onnxruntime
+    # via
+    #   googleapis-common-protos
+    #   onnxruntime
+    #   opentelemetry-proto
 pydantic==2.14.3
     # via
     #   -r requirements.in
@@ -41,6 +102,10 @@ pydantic-core==2.50.4
     # via pydantic
 python-multipart==0.0.33
     # via -r requirements.in
+requests==2.34.2
+    # via
+    #   opentelemetry-exporter-http-transport
+    #   opentelemetry-exporter-otlp-proto-http
 starlette==1.10.0
     # via fastapi
 typing-extensions==4.16.0
@@ -48,6 +113,9 @@ typing-extensions==4.16.0
     #   anyio
     #   fastapi
     #   opentelemetry-api
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
     #   pydantic
     #   pydantic-core
     #   starlette
@@ -56,5 +124,9 @@ typing-inspection==0.4.5
     # via
     #   fastapi
     #   pydantic
+urllib3==2.8.0
+    # via requests
 uvicorn==0.54.0
     # via -r requirements.in
+wrapt==2.5.2
+    # via opentelemetry-instrumentation

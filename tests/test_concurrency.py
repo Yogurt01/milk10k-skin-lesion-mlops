@@ -29,13 +29,13 @@ class BlockingEnsemble(FakeEnsemble):
         self.active = 0
         self.peak = 0
 
-    def predict(self, feeds):
+    def predict(self, feeds, stage=None):
         with self._lock:
             self.active += 1
             self.peak = max(self.peak, self.active)
         try:
             assert self.release.wait(TIMEOUT), "test never released the ensemble"
-            return super().predict(feeds)
+            return super().predict(feeds, stage)
         finally:
             with self._lock:
                 self.active -= 1

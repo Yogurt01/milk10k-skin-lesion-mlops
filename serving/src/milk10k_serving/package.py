@@ -8,12 +8,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
+# onnxruntime telemetry (P1-API-13): onnxruntime 1.31 opens an HTTPS connection to its Microsoft collector
+# (mobile.events.data.microsoft.com) when a session is created, unless ORT_DISABLE_TELEMETRY=1. It reads the variable
+# when onnxruntime is imported (measured: setting it after the import, before the session, still connected), so set
+# the default before anything here imports onnxruntime; an explicit value in the environment still wins. If
+# onnxruntime was imported earlier without the variable, the default cannot apply: say so loudly.
+_TELEMETRY_ALREADY_SET = "ORT_DISABLE_TELEMETRY" in os.environ
+ORT_TELEMETRY_DEFAULT_APPLIED = "onnxruntime" not in sys.modules or _TELEMETRY_ALREADY_SET
+os.environ.setdefault("ORT_DISABLE_TELEMETRY", "1")
+if not ORT_TELEMETRY_DEFAULT_APPLIED:
+    logging.getLogger(__name__).error(
+        "onnxruntime was imported before milk10k_serving.package and ORT_DISABLE_TELEMETRY was not set: onnxruntime "
+        "telemetry is NOT disabled. Import milk10k_serving first or set ORT_DISABLE_TELEMETRY=1 in the environment."
+    )
 
-from .preprocess import INPUT_NAMES, PreprocessSpec
+import numpy as np  # noqa: E402
+
+from .preprocess import INPUT_NAMES, PreprocessSpec  # noqa: E402
 
 MANIFEST = "manifest.json"
 OUTPUT_NAMES = ("probs_cls", "prob_bin")
@@ -66,11 +83,16 @@ class Ensemble:
     sessions: list
     member_files: list[str]
 
-    def predict(self, feeds: dict[str, np.ndarray]) -> np.ndarray:
-        """(batch, 12) float64: column 0 = P(malignant) from the binary head, columns 1..11 = class probabilities."""
+    def predict(self, feeds: dict[str, np.ndarray], stage=None) -> np.ndarray:
+        """(batch, 12) float64: column 0 = P(malignant) from the binary head, columns 1..11 = class probabilities.
+        `stage` (optional, see `predictor`) wraps each member's run as `ensemble_member` with its index."""
         total = None
-        for session in self.sessions:
-            probs_cls, prob_bin = session.run(list(OUTPUT_NAMES), feeds)
+        for index, session in enumerate(self.sessions):
+            if stage is None:
+                probs_cls, prob_bin = session.run(list(OUTPUT_NAMES), feeds)
+            else:
+                with stage("ensemble_member", member_index=index):
+                    probs_cls, prob_bin = session.run(list(OUTPUT_NAMES), feeds)
             cls = probs_cls.astype(np.float64)
             cls /= cls.sum(axis=1, keepdims=True)
             frame = np.column_stack([prob_bin.astype(np.float64).reshape(-1), cls])

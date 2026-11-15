@@ -31,7 +31,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -40,14 +40,17 @@ from fastapi import APIRouter, Depends, FastAPI, File, Form, HTTPException, Requ
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
 
 from . import DISCLAIMER, __version__
+from .metrics import STAGES, ApiMetrics, route_template
 from .package import load_package
-from .predictor import InvalidInput, Prediction, Predictor
+from .predictor import InvalidInput, Prediction, Predictor, Stage
 from .preprocess import IMAGE_PIXEL_CAP_APPLIED, PreprocessSpec
 from .settings import Settings, load_settings
+from .tracing import build_tracer_provider, instrument, span_attributes, tracer_for
 
 logger = logging.getLogger("milk10k_serving.api")
 MB = 1024 * 1024
@@ -219,16 +222,19 @@ class PredictionLimiter:
     no lock. Simpler than a threading semaphore with a timeout, whose waiting requests would each hold a threadpool
     thread (the pool is shared with every sync call of the app)."""
 
-    def __init__(self, max_running: int, max_queued: int):
+    def __init__(self, max_running: int, max_queued: int, on_reject: Callable[[], None] | None = None):
         self.max_running = max_running
         self.max_queued = max_queued
         self.running = 0
         self.waiting = 0
+        self._on_reject = on_reject  # e.g. the busy-rejection counter of /metrics
         self._semaphore = asyncio.Semaphore(max_running)
 
     @asynccontextmanager
     async def slot(self):
         if self.running + self.waiting >= self.max_running + self.max_queued:
+            if self._on_reject is not None:
+                self._on_reject()
             raise HTTPException(
                 503,
                 detail="server busy: too many predictions in progress, retry later",
@@ -350,6 +356,20 @@ async def ready(request: Request):
     return JSONResponse(status_code=503, content=body.model_dump(exclude_none=True))
 
 
+@router.get(
+    "/metrics",
+    summary="Prometheus metrics",
+    description="Metrics in the Prometheus text format: requests by route template, method and status; request "
+    "latency histogram; running and waiting predictions; 503-busy rejections; model readiness and load time; stage "
+    "durations of `/predict` (decode, preprocess, inference); distribution of P(malignant); process memory and CPU. "
+    "Labels never contain request ids, metadata values, diagnoses or file names. Never waits for running predictions.",
+    response_class=Response,
+    responses={200: {"content": {CONTENT_TYPE_LATEST: {}}, "description": "Prometheus text format."}},
+)
+async def metrics(request: Request) -> Response:
+    return Response(generate_latest(request.app.state.metrics.registry), media_type=CONTENT_TYPE_LATEST)
+
+
 @router.post(
     "/predict",
     response_model=PredictionResponse,
@@ -400,18 +420,28 @@ async def predict(
     ] = None,
 ) -> PredictionResponse:
     limiter: PredictionLimiter = request.app.state.limiter
-    async with limiter.slot():  # waits in the event loop; 503 at once if the queue is full
-        return await run_in_threadpool(
-            _predict_blocking,
-            request.app.state.settings,
-            predictor,
-            derm_image,
-            clinical_image,
-            age_approx=age_approx,
-            sex=sex,
-            anatomical_site_general=anatomical_site_general,
-            fitzpatrick_type=fitzpatrick_type,
-        )
+    # Span for the time spent waiting for a slot (ended when the slot is acquired or the request is rejected).
+    wait_span = request.app.state.tracer.start_span("queue_wait")
+    try:
+        async with limiter.slot():  # waits in the event loop; 503 at once if the queue is full
+            wait_span.end()
+            response = await run_in_threadpool(
+                _predict_blocking,
+                request.app.state.settings,
+                predictor,
+                derm_image,
+                clinical_image,
+                age_approx=age_approx,
+                sex=sex,
+                anatomical_site_general=anatomical_site_general,
+                fitzpatrick_type=fitzpatrick_type,
+                stage=request.app.state.stage,
+            )
+    finally:
+        if wait_span.is_recording():  # still open: rejected (503 busy) before a slot was free
+            wait_span.end()
+    request.app.state.metrics.p_malignant.observe(response.p_malignant)
+    return response
 
 
 def _predict_blocking(
@@ -424,19 +454,21 @@ def _predict_blocking(
     sex: str,
     anatomical_site_general: str | None,
     fitzpatrick_type: int,
+    stage: Stage,
 ) -> PredictionResponse:
     """The blocking part of /predict (file reads, validation against the package, inference); runs in a thread."""
     limit = settings.max_upload_mb * MB
-    derm = read_limited(derm_image, "derm_image", limit)
-    clinical = read_limited(clinical_image, "clinical_image", limit) if clinical_image is not None else None
-    errors = metadata_errors(
-        predictor.package.spec,
-        sex=sex,
-        anatomical_site_general=anatomical_site_general,
-        fitzpatrick_type=fitzpatrick_type,
-    )
-    if errors:
-        raise RequestValidationError(errors)
+    with stage("validate_input"):
+        derm = read_limited(derm_image, "derm_image", limit)
+        clinical = read_limited(clinical_image, "clinical_image", limit) if clinical_image is not None else None
+        errors = metadata_errors(
+            predictor.package.spec,
+            sex=sex,
+            anatomical_site_general=anatomical_site_general,
+            fitzpatrick_type=fitzpatrick_type,
+        )
+        if errors:
+            raise RequestValidationError(errors)
     optional = {"age_approx": age_approx, "anatomical_site_general": anatomical_site_general}
     missing = [field for field in OPTIONAL_METADATA if optional[field] is None]
     if missing:
@@ -449,13 +481,15 @@ def _predict_blocking(
             sex=sex,
             anatomical_site_general=anatomical_site_general,
             fitzpatrick_type=fitzpatrick_type,
+            stage=stage,
         )
     except InvalidInput as exc:
         field = FORM_FIELDS.get(exc.field, exc.field)
         raise RequestValidationError(
             [{"type": "value_error", "loc": ("body", field), "msg": exc.message, "input": None}]
         ) from None
-    return to_response(prediction, missing)
+    with stage("assemble_response"):  # includes the response model's range checks (probabilities in [0, 1])
+        return to_response(prediction, missing)
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -505,17 +539,43 @@ def _add_vocabulary(schema: dict, spec: PreprocessSpec) -> None:
                     properties[field]["enum"] = allowed
 
 
-def create_app(settings: Settings | None = None, loader: Callable[[], Predictor] | None = None) -> FastAPI:
+def stage_recorder(metrics: ApiMetrics, tracer) -> Stage:
+    """The `stage` hook passed to the predictor: one child span per stage (no-op when tracing is off; attributes get
+    the `milk10k.` prefix) and, for the decode, preprocess and inference stages, the duration in
+    `milk10k_predict_stage_duration_seconds` (a stage that raises is not recorded there; its span records the error)."""
+
+    @contextmanager
+    def stage(name: str, **attributes):
+        t0 = time.perf_counter()
+        with tracer.start_as_current_span(name, attributes=span_attributes(attributes)) as span:
+            yield span
+        if name in STAGES:
+            metrics.stage_duration.labels(name).observe(time.perf_counter() - t0)
+
+    return stage
+
+
+def create_app(
+    settings: Settings | None = None,
+    loader: Callable[[], Predictor] | None = None,
+    tracer_provider: Any = None,
+) -> FastAPI:
+    """`tracer_provider`: an OpenTelemetry TracerProvider to use instead of the one built from the settings (tests
+    pass one with an in-memory exporter); the app shuts down only a provider it built itself."""
     settings = settings or load_settings()
     _configure_logging(settings.log_level)
     if not IMAGE_PIXEL_CAP_APPLIED:
         logger.error("decoded-image cap not applied: cv2 was imported before milk10k_serving.preprocess")
     state = ModelState(loader or default_loader(settings), model_dir=settings.model_dir)
+    own_provider = tracer_provider is None
+    provider = build_tracer_provider(settings) if own_provider else tracer_provider
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         state.start()  # returns at once; the load runs in a background thread
         yield
+        if own_provider and provider is not None:
+            await run_in_threadpool(provider.shutdown)  # flush buffered spans (bounded by the export timeout)
 
     app = FastAPI(
         title="MILK10k skin-lesion API",
@@ -526,7 +586,19 @@ def create_app(settings: Settings | None = None, loader: Callable[[], Predictor]
     )
     app.state.settings = settings
     app.state.model = state
-    app.state.limiter = PredictionLimiter(settings.max_concurrent_predictions, settings.max_queued_predictions)
+    metrics = ApiMetrics(
+        running=lambda: limiter.running,
+        waiting=lambda: limiter.waiting,
+        ready=lambda: 1 if state.status == "ready" else 0,
+        load_seconds=lambda: (state.load_seconds or 0.0) if state.status == "ready" else 0.0,
+    )
+    limiter = PredictionLimiter(
+        settings.max_concurrent_predictions, settings.max_queued_predictions, on_reject=metrics.rejected_busy.inc
+    )
+    app.state.limiter = limiter
+    app.state.metrics = metrics
+    app.state.tracer = tracer_for(provider)
+    app.state.stage = stage_recorder(metrics, app.state.tracer)
     app.include_router(router)
 
     @app.middleware("http")
@@ -562,7 +634,10 @@ def create_app(settings: Settings | None = None, loader: Callable[[], Predictor]
                 )
                 response = JSONResponse(status_code=500, content={"detail": "internal server error"})
             response.headers[REQUEST_ID_HEADER] = request_id
-            level = logging.DEBUG if request.url.path in ("/health", "/ready") else logging.INFO  # probes: quiet
+            seconds = time.perf_counter() - t0
+            metrics.observe_request(route_template(app, request.scope), request.method, response.status_code, seconds)
+            # probes and scrapes: quiet
+            level = logging.DEBUG if request.url.path in ("/health", "/ready", "/metrics") else logging.INFO
             logger.log(
                 level,
                 "request_id=%s method=%s path=%s status=%d duration_ms=%.1f request_bytes=%s",
@@ -570,7 +645,7 @@ def create_app(settings: Settings | None = None, loader: Callable[[], Predictor]
                 request.method,
                 request.url.path,
                 response.status_code,
-                (time.perf_counter() - t0) * 1000,
+                seconds * 1000,
                 request.headers.get("content-length", "-"),
             )
             return response
@@ -596,7 +671,15 @@ def create_app(settings: Settings | None = None, loader: Callable[[], Predictor]
         return schema
 
     app.openapi = openapi
-    state.on_ready = lambda: setattr(app, "openapi_schema", None)
+
+    def on_ready() -> None:
+        app.openapi_schema = None  # rebuild with the package's vocabulary
+        package = state.predictor.package
+        metrics.model_info.labels(package.name, package.version).set(1)
+
+    state.on_ready = on_ready
+    if provider is not None:
+        instrument(app, provider)  # outermost middleware: the server span covers the whole request
     return app
 
 

@@ -46,7 +46,7 @@ class FakeEnsemble:
         self.row = np.concatenate([[p_malignant], cls])
         self.calls: list[dict] = []
 
-    def predict(self, feeds: dict) -> np.ndarray:
+    def predict(self, feeds: dict, stage=None) -> np.ndarray:
         self.calls.append(feeds)
         return self.row[None, :].copy()
 

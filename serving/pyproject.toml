@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=68"]
+# Exact build backend (the version pip's build isolation resolved in the image on 2026-11-15), so an image build never
+# picks up a newer setuptools by itself; update deliberately.
+requires = ["setuptools==84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -14,8 +16,19 @@ license = { text = "Code: see the repository README; model package: CC BY-NC 4.0
 dependencies = ["numpy", "onnxruntime", "opencv-python-headless"]
 
 [project.optional-dependencies]
-# The FastAPI service (`milk10k_serving.api`) and its ASGI server: pip install -e "serving[api]"
-api = ["fastapi", "pydantic", "python-multipart", "uvicorn"]
+# The FastAPI service (`milk10k_serving.api`), its ASGI server, metrics and tracing: pip install -e "serving[api]"
+# Tracing is part of the service (off unless OTEL_EXPORTER_OTLP_ENDPOINT is set), so it is not a separate extra.
+api = [
+    "fastapi",
+    "opentelemetry-api",
+    "opentelemetry-exporter-otlp-proto-http",
+    "opentelemetry-instrumentation-fastapi",
+    "opentelemetry-sdk",
+    "prometheus-client",
+    "pydantic",
+    "python-multipart",
+    "uvicorn",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
