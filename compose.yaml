@@ -89,15 +89,18 @@ services:
     ports:
       - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     networks: [default, monitoring]
+    # The monitoring stack must not depend on API health (it has to show an API that is down): only "started" for the
+    # API; the exporters must be healthy.
     depends_on:
       api:
-        condition: service_healthy
+        condition: service_started
       node-exporter:
         condition: service_healthy
       cadvisor:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      # Liveness endpoint of Prometheus; wget is in its image (busybox).
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -188,7 +191,7 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       # No default: Compose stops with this message when it is unset or empty (Grafana would fall back to admin/admin).
       # Applied when the Grafana database is created; with an existing grafana-data volume a new value has no effect.
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env (make env creates one)}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?no Grafana admin password. Without a .env file run make env (creates .env with a random password). With an existing .env set GRAFANA_ADMIN_PASSWORD= to a long random value there}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       # No calls home (names from the image's conf/defaults.ini): usage reporting, version and plugin update checks,

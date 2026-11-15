@@ -1,0 +1,102 @@
+# Unit tests for alert-rules.yml (P1-OBS-08). Run from the repository root:
+#   docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/p:ro" -w /p \
+#     prom/prometheus:v3.16.0 test rules alert-rules.test.yml
+# Each rule has a case where it fires and one where it does not. Series are synthetic; the rules are not changed here.
+rule_files:
+  - alert-rules.yml
+
+evaluation_interval: 15s
+
+tests:
+  # ApiDown: fires after 1 minute of up == 0, not while the target is up.
+  - interval: 15s
+    input_series:
+      - series: 'up{job="api", instance="10.0.0.2:8000"}'
+        values: "0x20"
+      - series: 'up{job="api", instance="10.0.0.3:8000"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 30s  # down, but for less than 1 minute: pending, not firing
+        alertname: ApiDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ApiDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: api
+              instance: 10.0.0.2:8000
+            exp_annotations:
+              summary: "API target 10.0.0.2:8000 cannot be scraped"
+              description: "Prometheus has not reached /metrics of 10.0.0.2:8000 for 1 minute."
+
+  # ApiHighErrorRate: 50 % of /predict responses are 503 for minutes -> fires; 5 % -> does not.
+  - interval: 15s
+    input_series:
+      # 1 request/s with 200 and 1 request/s with 503 (counters grow by 15 every 15 s)
+      - series: 'milk10k_http_requests_total{job="api", route="/predict", method="POST", status="200"}'
+        values: "0+15x40"
+      - series: 'milk10k_http_requests_total{job="api", route="/predict", method="POST", status="503"}'
+        values: "0+15x40"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ApiHighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "More than 10% of /predict responses are 5xx"
+              description: "5xx share of /predict over the last minute: 50%."
+
+  - interval: 15s
+    input_series:
+      # 19 requests with 200 per 15 s and 1 with 500: a 5 % share stays below the 10 % threshold
+      - series: 'milk10k_http_requests_total{job="api", route="/predict", method="POST", status="200"}'
+        values: "0+19x40"
+      - series: 'milk10k_http_requests_total{job="api", route="/predict", method="POST", status="500"}'
+        values: "0+1x40"
+      # 5xx on another route does not count
+      - series: 'milk10k_http_requests_total{job="api", route="/ready", method="GET", status="503"}'
+        values: "0+15x40"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ApiHighErrorRate
+        exp_alerts: []
+
+  # ApiHighLatencyP95: every /predict request between 3 and 5 s for 10 minutes -> p95 4.9 s > 3 s, fires;
+  # every request under 1 s -> does not.
+  - interval: 15s
+    input_series:
+      - series: 'milk10k_http_request_duration_seconds_bucket{job="api", route="/predict", method="POST", le="1"}'
+        values: "0x60"
+      - series: 'milk10k_http_request_duration_seconds_bucket{job="api", route="/predict", method="POST", le="3"}'
+        values: "0x60"
+      - series: 'milk10k_http_request_duration_seconds_bucket{job="api", route="/predict", method="POST", le="5"}'
+        values: "0+15x60"
+      - series: 'milk10k_http_request_duration_seconds_bucket{job="api", route="/predict", method="POST", le="+Inf"}'
+        values: "0+15x60"
+    alert_rule_test:
+      - eval_time: 4m  # true for less than 5 minutes: not firing yet
+        alertname: ApiHighLatencyP95
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: ApiHighLatencyP95
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "p95 latency of /predict above 3 s"
+              description: "p95 of /predict over 5 minutes: 4.9s."
+
+  - interval: 15s
+    input_series:
+      - series: 'milk10k_http_request_duration_seconds_bucket{job="api", route="/predict", method="POST", le="1"}'
+        values: "0+15x60"
+      - series: 'milk10k_http_request_duration_seconds_bucket{job="api", route="/predict", method="POST", le="3"}'
+        values: "0+15x60"
+      - series: 'milk10k_http_request_duration_seconds_bucket{job="api", route="/predict", method="POST", le="+Inf"}'
+        values: "0+15x60"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ApiHighLatencyP95
+        exp_alerts: []
