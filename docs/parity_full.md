@@ -66,3 +66,28 @@ Max |diff| per column:
 The reference was produced on a GPU in fp16 and the API runs on a CPU in fp32. The PyTorch GPU recompute of all 479
 lesions matched the reference within 3.1e-4 ([serving_measurements.md](serving_measurements.md) §3). This CPU ONNX run
 through the API stays within 1.1e-3.
+
+## Through the container (P1-TST-05, 2026-11-15)
+
+The same tests against the API container of the Compose stack (`make up`, image `serving/Dockerfile`, model package
+mounted read-only, default settings, Python 3.12.16 in the image). With `API_BASE_URL` set, `tests/test_http_parity.py`
+sends its requests to that URL and starts no server and loads no model in the test process.
+
+```bash
+make up
+make test-container          # sample lesions; API_BASE_URL defaults to http://127.0.0.1:8000
+API_BASE_URL=http://127.0.0.1:8000 MILK10K_DATA_DIR=/path/to/prepared/milk10k serving/.venv/bin/python -m pytest -s \
+  tests/test_http_parity.py::test_all_479_reference_lesions_through_http   # one-off, not in make test
+```
+
+| Item | Value |
+|---|---|
+| Sample lesions (3 intact) | max \|diff\| 2.55e-4; the 3 without a clinical image valid (`make test-container`: 1 passed, 3.7 s) |
+| Lesions sent / answered 200 | 479 / 479 |
+| Within 0.002 (all 12 columns) | 479 / 479 |
+| Max \|diff\| | 1.096e-3 (`DF`, ISIC_6071998) |
+| Max \|diff\| per column | the same as the table above (all 12, to 3 significant digits) |
+| Clinical image used / `metadata_missing` | 479 / 479; the same 6 lesions |
+| Total time | 243.1 s |
+
+The container gives the same differences as the host run above.

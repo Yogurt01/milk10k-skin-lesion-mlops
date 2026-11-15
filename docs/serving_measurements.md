@@ -205,6 +205,88 @@ image is at most 600 × 450 = 270,000 pixels (`training/results/tables/01_image_
 | 5001 × 5000 | 73 kB | 25,000,000 | rejected (`ImageTooLarge`) | < 0.001 s | 47 → 50 MiB |
 | 20000 × 20000 / 40000 × 30000 | 1.17 / 3.50 MB | 25,000,000 | rejected | ≤ 0.002 s | +3 / +5 MiB |
 
+## 9. Container: image, Compose, model fetch (M6a, 2026-11-15)
+
+The API image ([`serving/Dockerfile`](../serving/Dockerfile)) in the Compose stack ([`compose.yaml`](../compose.yaml),
+`make up`), API service only, with the model package mounted read-only. Same script and settings as §7 B (defaults:
+`MAX_CONCURRENT_PREDICTIONS=2`, `MAX_QUEUED_PREDICTIONS=8`, `ORT_INTRA_OP_THREADS=4`).
+
+- **Machine:** the same laptop: Intel Core i5-12500H, 16 logical CPUs, 15,198 MiB RAM, 4 GiB swap; kernel 7.0.0-43; Docker 29.9.3, Compose v5.7.1, buildx 0.39.0.
+- **Load:** Chrome and VS Code were running. `free -m`: 9.2–11.3 GiB used, 3.9–6.0 GiB available; 2.1 GiB of swap was already in use by other processes.
+- **Noise:** same caveat as §7: one run per level, so the latency numbers are indicative.
+
+**Model fetch** (`scripts/fetch_model.sh`, P1-BSH-02; no token, empty environment):
+
+| Step | Result |
+|---|---|
+| First download into an empty folder outside the repository | 18 files + `manifest.json`, 1,431,377,168 bytes, 439 s; all 19 sha256 identical to the local package the parity tests ran on |
+| Second run (idempotent) | nothing downloaded, 1.03 s (every file re-hashed) |
+| Interrupted download (`.part` with the first 40 MiB of one member) | resumed at 41,943,040 bytes, file identical, 28.2 s |
+| One byte changed in `NOTICE.md` (same size) | `--check` exits 1 naming the file; a normal run downloads it again |
+| Asset differs from the manifest (`file://` mirror) | exit 1, both sha256 printed, `.part` removed |
+| `manifest.json` differs from the pinned sha256 | exit 1 before any other download |
+
+**Image** (`python:3.12.16-slim-trixie`, pinned by tag and digest):
+
+| Item | Value |
+|---|---|
+| Image size | 621,763,963 bytes (622 MB; base 177,330,020 bytes, pinned dependencies layer 326 MB, package layer 1.37 MB) |
+| Build context | 53 kB (context is `serving/`, allowlist `.dockerignore`) |
+| Cold build (`--no-cache`, base already pulled, packages from PyPI) | 57.8 s |
+| Rebuild after a code-only change | 6.5 s (dependency layer cached) |
+| Rebuild without changes | 0.7 s |
+| torch in the image | no (`pip list`; `find_spec("torch")` is None) |
+| `.onnx` / `.pth` files in the image | 0 (onnxruntime's 3 bundled example models are deleted in the install layer) |
+| User | uid 10001 (`app`), owns no file in the image |
+
+**Startup and recovery:**
+
+| Event | Time |
+|---|---|
+| `docker compose up -d --wait` → first HTTP answer | 1.07 s, 0.93 s |
+| → `/ready` 200 (`load_seconds` 2.54, 2.50) | 3.50 s, 3.46 s |
+| → `up --wait` returns (healthy) | 4.79 s, 4.76 s |
+| API process exits (SIGTERM to PID 1 from inside) → `/ready` 200 again, `restart: unless-stopped` | 4.13 s, 4.06 s |
+| `make up` with a dependency-layer rebuild and the fetch check | 80.9 s |
+
+**Latency through the container** (24 requests per level, `benchmarks/serving/concurrency.py --pid <host PID of the container's uvicorn>`), next to the host run of §7 B:
+
+| c | Container p50 | p95 | Throughput | Host §7 B p50 | p95 | Throughput |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0.627 s | 0.681 s | 1.58 req/s | 0.58 s | 0.62 s | 1.71 req/s |
+| 2 | 0.931 s | 1.043 s | 2.15 req/s | 1.10 s | 1.14 s | 1.81 req/s |
+
+`/health` p50 2.9 ms, max 6.4 ms during the runs. At c = 2 the container was faster than the host run of §7 B and
+close to the host run A (0.86 / 1.00 s); with one run each and different background load, this is noise, not an
+effect of the container.
+
+**Memory** (limit 3 GiB, swap off):
+
+| State | `docker stats` | Process RSS (VmRSS / peak VmHWM) | cgroup |
+|---|---:|---:|---|
+| Idle, model loaded | 1.822 GiB | 1,907 MiB (RssAnon 1,857 MiB) | |
+| c = 1 and c = 2 runs | max 2.022 GiB (14 samples) | peak 2,113 MiB | `memory.peak` 2,084 MiB, swap 0, `oom_kill` 0 |
+| 479-lesion parity run (2 client threads) | 2.1 GiB at the end | | no restart, not OOM-killed |
+
+- **Swap:** Docker's default for a memory limit allowed as much swap again (`MemorySwap` = 2 × limit, `memory.swap.max` 3 GiB). With a 1 GiB limit the API still loaded and answered `/ready` (RSS capped at 1.0 GiB, the rest swapped) and died only under load. `memswap_limit` = the limit turns container swap off: then 1 GiB is OOM-killed during the load (`OOMKilled` true, 6 restarts in 20 s) and 3 GiB runs with `memory.swap.max` 0.
+- **The memory is anonymous:** RssFile was ~50 MB; the ONNX weights are copied into process memory, not served from the page cache.
+
+**Overload** (15 parallel `/predict`, twice): 10 × 200 (slowest 5.34 s, 5.32 s; host 5.02 s) and 5 × 503 with
+`Retry-After: 1` in 0.03 s; meanwhile `/ready` 200 and `/health` 2.5–2.7 ms. Same split as on the host (§7).
+
+**Missing model:** with an empty folder mounted, the container becomes `unhealthy` (3 failed checks, 0 restarts: Docker
+restarts on exit only); `/ready` 503 `ModelPackageError: model package not found: <MODEL_DIR>/manifest.json does not
+exist (set MODEL_DIR)`; the full path only in the log. A host folder that does not exist: `compose up` refuses to start
+(`bind source path does not exist`; `create_host_path: false`).
+
+**onnxruntime telemetry:**
+- **What it does:** onnxruntime 1.31.1 contains a telemetry client (`telemetry_1ds.cc`, collector `https://mobile.events.data.microsoft.com/OneCollector/1.0`). Creating one session opened an HTTPS connection: 2/2 runs, remote 20.184.175.15:443 and 20.184.175.17:443. The first address equals the DNS answer for `mobile.events.data.microsoft.com` at that moment; the second is in the same /24 as that run's DNS answer.
+- **Device ID:** it also tries to store one under `~/.cache/Microsoft/DeveloperTools/.onnxruntime`. That folder exists on the host, so host runs also used the client.
+- **Fix in the image:** with `ORT_DISABLE_TELEMETRY=1` there was no remote connection (2/2 runs, plus the app run) and no device-ID warning. The image sets it.
+- **Not checked:** what is sent. The host side (`make serve`, tests) is P1-API-13.
+
+Container parity: [parity_full.md](parity_full.md) (sample lesions 2.55e-4, 479 / 479 within 0.002, max 1.096e-3).
+
 ## How to reproduce
 
 Run from the repository root, with `MILK10K_DATA_DIR` pointing at the prepared dataset and the 15 checkpoints in
@@ -221,6 +303,10 @@ notebooks/.venv/bin/python benchmarks/serving/export.py          # §5 (venv: ma
 `serving/.venv/bin/python benchmarks/serving/concurrency.py --pid <uvicorn pid> --levels 1 2 4 5 --label default`
 (writes `benchmarks/serving/out/concurrency_<label>.json`). §8 used temporary scripts outside the repository; the
 behaviour is covered by `tests/test_preprocess.py` and `tests/test_api.py`.
+
+§9: `make fetch-model` (or `scripts/fetch_model.sh <dir>`), `make up`, then the §7 command with
+`--pid $(docker inspect milk10k-api-1 --format '{{.State.Pid}}') --levels 1 2 --label container` and
+`docker stats --no-stream`; container parity: `make test-container` (see [parity_full.md](parity_full.md)).
 
 Each script writes a JSON file with every number in this document to `benchmarks/serving/out/` (gitignored). The
 end-to-end ONNX latency in §5 comes from notebook 08 and the `milk10k_serving` predictor. A re-run on 2026-11-09

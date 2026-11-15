@@ -2,7 +2,7 @@
 
 > **Research model, not a medical device.** Its output is not a diagnosis and must not be used for clinical decisions.
 
-Status as of 2026-11-14. The diagrams are derived from the code and the project's progress checklist. Task IDs
+Status as of 2026-11-15 (M6a: model fetch script, API image, Compose with the API service). The diagrams are derived from the code and the project's progress checklist. Task IDs
 (`P1-…`) refer to that checklist, which is kept outside this repository. The diagrams are updated at the end of each
 milestone.
 
@@ -19,11 +19,13 @@ flowchart LR
 
     subgraph serving["Serving"]
         nginx["nginx reverse proxy<br/>official image in Compose<br/>P1-NGX-01..04"]
-        api["FastAPI app, api.py<br/>/health /ready /predict<br/>request id, concurrency limit"]
-        metrics["/metrics endpoint<br/>P1-OBS-01, P1-OBS-02"]
-        pred["milk10k_serving Predictor<br/>decode, preprocess, assemble"]
-        ort["ONNX Runtime, CPU<br/>15 member sessions"]
-        pkg[("Model package<br/>15 ONNX files + manifest.json with sha256")]
+        subgraph container["API container, Compose service api"]
+            api["FastAPI app, api.py<br/>/health /ready /predict<br/>request id, concurrency limit"]
+            metrics["/metrics endpoint<br/>P1-OBS-01, P1-OBS-02"]
+            pred["milk10k_serving Predictor<br/>decode, preprocess, assemble"]
+            ort["ONNX Runtime, CPU<br/>15 member sessions"]
+        end
+        pkg[("Model package on the host<br/>15 ONNX files + manifest.json with sha256<br/>not in the image")]
     end
 
     release[("GitHub Release model-v1.0.0<br/>model package assets")]
@@ -40,7 +42,7 @@ flowchart LR
         repo["GitHub repository<br/>P1-SET-06"]
         jenkins["Jenkins in Compose<br/>P1-CI-01..10"]
         registry[("Image registry<br/>P1-CI-05, P1-GKE-03")]
-        compose["Docker Compose stack<br/>P1-DCK-01..07"]
+        compose["Compose deploy of the pushed image<br/>P1-CI-06"]
         mk["minikube, Helm chart, 3 replicas<br/>P1-K8S-01..07, P1-CI-09"]
         kps["kube-prometheus-stack via Helm<br/>P1-OBS-09, P1-OBS-10"]
         tf["Terraform<br/>P1-IAC-01..05"]
@@ -49,13 +51,13 @@ flowchart LR
         kpsg["kube-prometheus-stack on GKE<br/>P1-GKE-07"]
     end
 
-    client -->|"HTTP, make serve"| api
+    client -->|"HTTP 127.0.0.1:8000, make up or make serve"| api
     client -.->|EXT| nginx
     nginx -.-> api
     api --> pred
     pred --> ort
-    pkg -->|"sha256 verified, loaded once at startup"| ort
-    release -.->|"fetch_model.sh, P1-BSH-02"| pkg
+    pkg -->|"read-only bind mount /models, sha256 verified, loaded once at startup"| ort
+    release -->|"scripts/fetch_model.sh: curl, sha256 per file"| pkg
     api -.-> metrics
     prom -.->|scrape| metrics
     prom -.->|scrape| nodeexp
@@ -79,6 +81,7 @@ flowchart LR
     classDef planned fill:#ffffff,stroke:#666666,stroke-width:1px,stroke-dasharray:5 5,color:#111111
     classDef ext fill:#fff4e5,stroke:#b35c00,stroke-width:1px,stroke-dasharray:2 4,color:#111111
     class api,pred,ort,pkg,release,repo implemented
+    style container fill:#f3faf5,stroke:#1e7e34,stroke-width:2px,color:#111111
     class metrics,prom,graf,nodeexp,cadv,jaeger,jenkins,registry,compose,mk,kps,tf,gke,gcs,kpsg planned
     class nginx ext
 ```
@@ -89,8 +92,8 @@ flowchart LR
 | FastAPI app (`/health`, `/ready`, `/predict`) | implemented | [`serving/src/milk10k_serving/api.py`](../serving/src/milk10k_serving/api.py); P1-API-01..11; request ids and access log (P1-PY-07); started with `make serve` ([Makefile](../Makefile)) |
 | Predictor (decode, preprocessing, assembly) | implemented | [`predictor.py`](../serving/src/milk10k_serving/predictor.py), [`preprocess.py`](../serving/src/milk10k_serving/preprocess.py); P1-PY-05; decoded-image cap P1-API-09 |
 | ONNX Runtime, 15 member sessions | implemented | [`package.py`](../serving/src/milk10k_serving/package.py) (`load_package`, `Ensemble`); P1-PY-04 |
-| Model package with sha256 manifest | implemented | Built by [notebook 08](../notebooks/08_export_for_deployment.ipynb) (P1-NB-03); verified at startup by `verify_package` (P1-PY-04). Not in git |
-| GitHub Release `model-v1.0.0` | implemented (assets uploaded) | P1-SET-10 (in progress: download and verification by `scripts/fetch_model.sh`, P1-BSH-02, is planned) |
+| Model package with sha256 manifest | implemented | Built by [notebook 08](../notebooks/08_export_for_deployment.ipynb) (P1-NB-03); verified at startup by `verify_package` (P1-PY-04). Not in git and not in the image: mounted read-only into the container (P1-DCK-02) |
+| GitHub Release `model-v1.0.0` | implemented | 19 assets; [`scripts/fetch_model.sh`](../scripts/fetch_model.sh) (`make fetch-model`) downloads them without a token, pins the manifest's sha256 and checks every file (P1-SET-10, P1-BSH-02) |
 | `/metrics` (API and model metrics) | planned | P1-OBS-01, P1-OBS-02 |
 | Prometheus, node-exporter, cAdvisor | planned | P1-OBS-03, P1-DCK-03 |
 | Grafana (host, containers, API dashboards) | planned | P1-OBS-04, P1-OBS-05 |
@@ -99,7 +102,9 @@ flowchart LR
 | GitHub repository | implemented | Public repository (P1-SET-06) |
 | Jenkins in Compose | planned | P1-CI-01..10 |
 | Image registry | planned | P1-CI-05; Artifact Registry for GKE: P1-GKE-03, P1-IAC-03 |
-| Docker Compose stack | planned | P1-DCK-01..07 |
+| API image | implemented | [`serving/Dockerfile`](../serving/Dockerfile): pinned `python:3.12.16-slim-trixie` (tag + digest), pinned requirements then the package with its `api` extra, no torch, uid 10001, healthcheck on `/ready` with the Python standard library, uvicorn without `--workers` (P1-DCK-01) |
+| Docker Compose stack | api service implemented; monitoring services planned | [`compose.yaml`](../compose.yaml), `make up` / `make down`: `.env` optional, model mounted read-only, port on 127.0.0.1 only, `restart: unless-stopped`, 3 GiB memory limit without swap (P1-DCK-02..06 in progress); Prometheus, Grafana, Jaeger, node-exporter, cAdvisor: P1-OBS-03..07; one-command check from a fresh clone: P1-DCK-07 |
+| Compose deploy from the registry | planned | P1-CI-06 |
 | minikube with a Helm chart, 3 replicas | planned (bonus) | P1-K8S-01..07, P1-CI-09 |
 | kube-prometheus-stack via Helm | planned (bonus) | P1-OBS-09, P1-OBS-10; on GKE: P1-GKE-07 |
 | Terraform, GKE, GCS copy of the package | planned (bonus) | P1-IAC-01..05, P1-GKE-01..08 (teardown right after the demo: P1-GKE-08) |
@@ -185,7 +190,9 @@ sequenceDiagram
 ```
 
 `GET /health` always returns 200. `GET /ready` returns 503 while loading or after a failed load, and 200 when ready,
-also under overload. Both are `async def`, so they answer while every prediction slot is busy.
+also under overload. Both are `async def`, so they answer while every prediction slot is busy. In the container the
+same path runs unchanged; the Docker healthcheck polls `/ready` on the container port, so a failed load shows as
+`unhealthy` (the process keeps running; Docker restarts it only when it exits).
 
 ## 3. CI/CD and deployment flow (all planned)
 
