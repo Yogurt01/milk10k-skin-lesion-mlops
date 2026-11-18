@@ -6,8 +6,8 @@ is mounted read-only into its container. UIs on 127.0.0.1 only: Prometheus :9090
 | Path | Used by | What |
 |---|---|---|
 | `prometheus/prometheus.yml` | Prometheus | Scrapes the API (`/metrics`, DNS discovery of the `api` service, so replicas are found), node-exporter, cAdvisor and itself every 15 s on the internal `monitoring` network |
-| `prometheus/alert-rules.yml` | Prometheus | `ApiDown`, `ApiHighErrorRate` (5xx share of `/predict` > 10 % for 1 min), `ApiHighLatencyP95` (p95 of `/predict` > 3 s for 5 min); shown at http://localhost:9090/alerts (no Alertmanager) |
-| `prometheus/alert-rules.test.yml` | promtool | Unit tests for the three rules (fires / does not fire): `docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/p:ro" -w /p prom/prometheus:v3.16.0 test rules alert-rules.test.yml` |
+| `prometheus/alert-rules.yml` | Prometheus | 4 rules: `ApiDown` (a known API target cannot be scraped, or no API target at all, for 1 min), `ApiModelNotReady` (`milk10k_model_ready` 0 for 2 min), `ApiHighErrorRate` (5xx share of `/predict` > 10 % for 1 min), `ApiHighLatencyP95` (p95 of `/predict` > 3 s for 5 min); shown at http://localhost:9090/alerts (no Alertmanager) |
+| `prometheus/alert-rules.test.yml` | promtool | Unit tests for the four rules (fires / does not fire): `docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/p:ro" -w /p prom/prometheus:v3.16.0 test rules alert-rules.test.yml` |
 | `grafana/provisioning/datasources/prometheus.yml` | Grafana | Datasource `Prometheus` (uid `prometheus`, `http://prometheus:9090`) |
 | `grafana/provisioning/dashboards/dashboards.yml` | Grafana | Loads the dashboards below at startup (UI edits are not saved back) |
 | `grafana/dashboards/machine-resources.json` | Grafana | "MILK10k: machine resources and API": host CPU, memory, disk space, disk I/O, network; per-container CPU, memory, disk I/O, network; API request rate, `/predict` p50/p95, running and waiting predictions, 503s and 5xx share, inference time, model ready |
