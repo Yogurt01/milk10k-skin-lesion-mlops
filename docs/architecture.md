@@ -2,14 +2,15 @@
 
 > **Research model, not a medical device.** Its output is not a diagnosis and must not be used for clinical decisions.
 
-Status as of 2026-11-19 (M7: Jenkins pipeline test → build → deploy → smoke → parity on a local Jenkins, configured as code; the fresh-clone check passes with the smoke-test script; 4 alert rules. M6: monitoring stack, alert rules unit-tested; M6a: model fetch script, API image). The diagrams are derived from the code and the project's progress checklist. Task IDs
-(`P1-…`) refer to that checklist, which is kept outside this repository. The diagrams are updated at the end of each
-milestone.
+Status as of 2026-11-19: the API, its model package and the monitoring stack run with one command (`make up`); a
+local Jenkins, configured as code, runs the pipeline test → build → deploy → smoke → parity on every push to `main`;
+Prometheus has 4 alert rules. The Kubernetes and cloud parts are planned. The diagrams are derived from the code and
+are updated whenever a part is added.
 
 Styling in every diagram:
 - **Solid** box or arrow: implemented.
 - **Dashed**: planned.
-- **Orange, dotted**: owner's extension beyond the course requirements (`EXT`), planned after the required items.
+- **Orange, dotted**: optional extension beyond the course requirements, planned after the required items.
 
 ## 1. Components
 
@@ -18,11 +19,11 @@ flowchart LR
     client(["Client<br/>curl, serving/client.py"])
 
     subgraph serving["Serving"]
-        nginx["nginx reverse proxy<br/>official image in Compose<br/>P1-NGX-01..04"]
+        nginx["nginx reverse proxy<br/>official image in Compose<br/>optional extension"]
         subgraph container["API container, Compose service api"]
             api["FastAPI app, api.py<br/>/health /ready /predict<br/>request id, concurrency limit"]
-            metrics["/metrics endpoint, metrics.py<br/>P1-OBS-01, P1-OBS-02"]
-            tracing["OpenTelemetry SDK, tracing.py<br/>server span + stage spans<br/>P1-OBS-06, P1-OBS-07"]
+            metrics["/metrics endpoint, metrics.py"]
+            tracing["OpenTelemetry SDK, tracing.py<br/>server span + stage spans"]
             pred["milk10k_serving Predictor<br/>decode, preprocess, assemble"]
             ort["ONNX Runtime, CPU<br/>15 member sessions"]
         end
@@ -32,30 +33,30 @@ flowchart LR
     release[("GitHub Release model-v1.0.0<br/>model package assets")]
 
     subgraph obs["Observability, Compose services on the internal network monitoring"]
-        prom["Prometheus v3.16, alert rules<br/>P1-OBS-03, P1-OBS-08"]
-        graf["Grafana 13.3, provisioned<br/>datasource + dashboard<br/>P1-OBS-04, P1-OBS-05"]
-        nodeexp["node-exporter v1.12<br/>host CPU, memory, disk<br/>P1-OBS-03"]
-        cadv["cAdvisor v0.60<br/>per-container + host network<br/>P1-OBS-03"]
-        jaeger["Jaeger v2.23, in-memory<br/>P1-OBS-06, P1-OBS-07"]
+        prom["Prometheus v3.16, alert rules"]
+        graf["Grafana 13.3, provisioned<br/>datasource + dashboard"]
+        nodeexp["node-exporter v1.12<br/>host CPU, memory, disk"]
+        cadv["cAdvisor v0.60<br/>per-container + host network"]
+        jaeger["Jaeger v2.23, in-memory"]
     end
     host[("Host: /proc, /sys, / read-only<br/>Docker + containerd sockets")]
-    browser(["Owner's browser<br/>127.0.0.1 :9090 :3000 :16686"])
+    browser(["Browser on the same machine<br/>127.0.0.1 :9090 :3000 :16686"])
 
     subgraph cicd["CI/CD and deployment"]
-        repo["GitHub repository<br/>P1-SET-06"]
-        jenkins["Jenkins 2.580.2 LTS in Compose<br/>JCasC + Job DSL, host Docker socket<br/>P1-CI-01..08, P1-CI-10"]
-        registry[("Image registry, from M10<br/>P1-GKE-03")]
-        compose["Compose deploy of the local image<br/>milk10k-api:build-sha7, smoke + parity<br/>P1-CI-04..06"]
-        mk["minikube, Helm chart, 3 replicas<br/>P1-K8S-01..07, P1-CI-09"]
-        kps["kube-prometheus-stack via Helm<br/>P1-OBS-09, P1-OBS-10"]
-        tf["Terraform<br/>P1-IAC-01..05"]
-        gke["GKE, Helm chart, 3 replicas<br/>P1-GKE-01..08"]
-        gcs[("GCS copy of the model package<br/>P1-GKE-04")]
-        kpsg["kube-prometheus-stack on GKE<br/>P1-GKE-07"]
+        repo["GitHub repository"]
+        jenkins["Jenkins 2.580.2 LTS in Compose<br/>JCasC + Job DSL, host Docker socket"]
+        registry[("Image registry<br/>with the cloud deployment")]
+        compose["Compose deploy of the local image<br/>milk10k-api:build-sha7, smoke + parity"]
+        mk["minikube, Helm chart, 3 replicas"]
+        kps["kube-prometheus-stack via Helm"]
+        tf["Terraform"]
+        gke["GKE, Helm chart, 3 replicas"]
+        gcs[("GCS copy of the model package")]
+        kpsg["kube-prometheus-stack on GKE"]
     end
 
     client -->|"HTTP 127.0.0.1:8000, make up or make serve"| api
-    client -.->|EXT| nginx
+    client -.->|optional| nginx
     nginx -.-> api
     api --> pred
     pred --> ort
@@ -76,7 +77,7 @@ flowchart LR
 
     repo -->|"pollSCM H/5"| jenkins
     jenkins -->|"docker build + compose up through the host socket"| compose
-    jenkins -.->|"push, M10"| registry
+    jenkins -.->|"push, with the cloud deployment"| registry
     registry -.-> mk
     registry -.-> gke
     mk -.- kps
@@ -98,26 +99,26 @@ flowchart LR
 
 | Component | Status | Evidence |
 |---|---|---|
-| Client | external; example client implemented | Any HTTP client; [`serving/client.py`](../serving/client.py) (standard library only, P1-API-08) |
-| FastAPI app (`/health`, `/ready`, `/predict`) | implemented | [`serving/src/milk10k_serving/api.py`](../serving/src/milk10k_serving/api.py); P1-API-01..11; request ids and access log (P1-PY-07); started with `make serve` ([Makefile](../Makefile)) |
-| Predictor (decode, preprocessing, assembly) | implemented | [`predictor.py`](../serving/src/milk10k_serving/predictor.py), [`preprocess.py`](../serving/src/milk10k_serving/preprocess.py); P1-PY-05; decoded-image cap P1-API-09 |
-| ONNX Runtime, 15 member sessions | implemented | [`package.py`](../serving/src/milk10k_serving/package.py) (`load_package`, `Ensemble`); P1-PY-04 |
-| Model package with sha256 manifest | implemented | Built by [notebook 08](../notebooks/08_export_for_deployment.ipynb) (P1-NB-03); verified at startup by `verify_package` (P1-PY-04). Not in git and not in the image: mounted read-only into the container (P1-DCK-02) |
-| GitHub Release `model-v1.0.0` | implemented | 19 assets; [`scripts/fetch_model.sh`](../scripts/fetch_model.sh) (`make fetch-model`) downloads them without a token, pins the manifest's sha256 and checks every file (P1-SET-10, P1-BSH-02) |
-| `/metrics` (API and model metrics) | implemented | [`metrics.py`](../serving/src/milk10k_serving/metrics.py): requests by route template / method / status, latency histogram, running and waiting predictions, 503-busy counter, model ready / load time / info, stage durations, P(malignant) histogram; labels bounded (unmatched paths → `unmatched`). P1-OBS-01, P1-OBS-02 |
-| Prometheus, node-exporter, cAdvisor | implemented | [`monitoring/prometheus/`](../monitoring/prometheus/) (scrape config, 4 alert rules with promtool unit tests in `alert-rules.test.yml`: ApiDown incl. a missing target, ApiModelNotReady, ApiHighErrorRate, ApiHighLatencyP95; P1-OBS-08, P1-OBS-11); all 4 targets up (P1-OBS-03). node-exporter and cAdvisor only on the internal network, host folders read-only; cAdvisor also reads the Docker and containerd sockets (Decision log) |
-| Grafana (machine resources and API dashboard) | implemented; dashboard checked by the owner (2026-11-15) | [`monitoring/grafana/`](../monitoring/grafana/): provisioned datasource and one dashboard (host, containers, API rows; every panel query returns data through the Prometheus API). Admin password only from `.env`; analytics and update checks off. P1-OBS-04, P1-OBS-05 |
-| Jaeger v2 via the OTLP exporter | implemented; UI and span tags checked by the owner (2026-11-15) | [`tracing.py`](../serving/src/milk10k_serving/tracing.py): OTLP/HTTP to `jaeger:4318` when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, FastAPI instrumentation (probes and `/metrics` excluded), stage spans; [`monitoring/jaeger/config.yaml`](../monitoring/jaeger/config.yaml) (in-memory, 10,000 traces). P1-OBS-06, P1-OBS-07 |
-| nginx (reverse proxy, load balancing in a Compose profile, GET-only cache exercise) | EXT, planned after the required items | P1-DEC-13, P1-NGX-01..04. Official `nginx` image in Compose only, never the retired community Ingress NGINX on Kubernetes |
-| GitHub repository | implemented | Public repository (P1-SET-06) |
-| Jenkins in Compose | implemented | [`ci/`](../ci/README.md): `jenkins/jenkins:2.580.2-lts-jdk21` by digest + Docker CLI, Buildx, Compose, make, uv; 69 pinned plugins; JCasC + Job DSL (no setup wizard, no anonymous access, UI on 127.0.0.1:8081); host Docker socket (root-equivalent, documented); `make ci-up` / `make ci-down`. [`Jenkinsfile`](../Jenkinsfile): section 3. P1-CI-01..08, P1-CI-10 |
-| Image registry | planned (M10) | No registry in M7 (decision CI-D3): the pipeline tags `milk10k-api:<build>-<sha7>` locally and keeps the newest 3. Registry with GKE: P1-GKE-03, P1-IAC-03 |
-| API image | implemented | [`serving/Dockerfile`](../serving/Dockerfile): pinned `python:3.12.16-slim-trixie` (tag + digest), pinned requirements then the package with its `api` extra, no torch, uid 10001, healthcheck on `/ready` with the Python standard library, uvicorn without `--workers` (P1-DCK-01) |
-| Docker Compose stack | implemented (api + 5 monitoring services) | [`compose.yaml`](../compose.yaml), `make up` / `make down`: images pinned by tag + digest, model mounted read-only, UIs on 127.0.0.1 only, internal network `monitoring` for scrapes and OTLP, every service `cap_drop: ALL` + `no-new-privileges` + a memory limit without swap + json-file log rotation (10 MB × 3), Prometheus starts with the API without waiting for its health, so an API that cannot load its model still shows up in monitoring (`milk10k_model_ready` 0); Grafana waits for a healthy Prometheus (P1-DCK-03..06); one-command check from a fresh clone: P1-DCK-07 |
-| Compose deploy by the pipeline | implemented | Deploy stage: `docker compose up -d --no-build --wait` with `API_IMAGE_TAG`, model from the CI copy (read-only), Grafana password from a Jenkins credential; then smoke test and HTTP parity against `http://api:8000` (P1-CI-04..06). No automatic rollback (CI-D7) |
-| minikube with a Helm chart, 3 replicas | planned (bonus) | P1-K8S-01..07, P1-CI-09 |
-| kube-prometheus-stack via Helm | planned (bonus) | P1-OBS-09, P1-OBS-10; on GKE: P1-GKE-07 |
-| Terraform, GKE, GCS copy of the package | planned (bonus) | P1-IAC-01..05, P1-GKE-01..08 (teardown right after the demo: P1-GKE-08) |
+| Client | external; example client implemented | Any HTTP client; [`serving/client.py`](../serving/client.py) (standard library only) |
+| FastAPI app (`/health`, `/ready`, `/predict`) | implemented | [`serving/src/milk10k_serving/api.py`](../serving/src/milk10k_serving/api.py); request ids and access log; started with `make serve` ([Makefile](../Makefile)) |
+| Predictor (decode, preprocessing, assembly) | implemented | [`predictor.py`](../serving/src/milk10k_serving/predictor.py), [`preprocess.py`](../serving/src/milk10k_serving/preprocess.py); cap on decoded image pixels |
+| ONNX Runtime, 15 member sessions | implemented | [`package.py`](../serving/src/milk10k_serving/package.py) (`load_package`, `Ensemble`) |
+| Model package with sha256 manifest | implemented | Built by [notebook 08](../notebooks/08_export_for_deployment.ipynb) ; verified at startup by `verify_package`. Not in git and not in the image: mounted read-only into the container |
+| GitHub Release `model-v1.0.0` | implemented | 19 assets; [`scripts/fetch_model.sh`](../scripts/fetch_model.sh) (`make fetch-model`) downloads them without a token, pins the manifest's sha256 and checks every file |
+| `/metrics` (API and model metrics) | implemented | [`metrics.py`](../serving/src/milk10k_serving/metrics.py): requests by route template / method / status, latency histogram, running and waiting predictions, 503-busy counter, model ready / load time / info, stage durations, P(malignant) histogram; labels bounded (unmatched paths → `unmatched`) |
+| Prometheus, node-exporter, cAdvisor | implemented | [`monitoring/prometheus/`](../monitoring/prometheus/) (scrape config, 4 alert rules with promtool unit tests in `alert-rules.test.yml`: ApiDown incl. a missing target, ApiModelNotReady, ApiHighErrorRate, ApiHighLatencyP95); all 4 targets up. node-exporter and cAdvisor only on the internal network, host folders read-only; cAdvisor also reads the Docker and containerd sockets to name containers, which gives it control over Docker (accepted for a local stack) |
+| Grafana (machine resources and API dashboard) | implemented; dashboard checked by eye (2026-11-15) | [`monitoring/grafana/`](../monitoring/grafana/): provisioned datasource and one dashboard (host, containers, API rows; every panel query returns data through the Prometheus API). Admin password only from `.env`; analytics and update checks off |
+| Jaeger v2 via the OTLP exporter | implemented; UI and span tags checked by eye (2026-11-15) | [`tracing.py`](../serving/src/milk10k_serving/tracing.py): OTLP/HTTP to `jaeger:4318` when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, FastAPI instrumentation (probes and `/metrics` excluded), stage spans; [`monitoring/jaeger/config.yaml`](../monitoring/jaeger/config.yaml) (in-memory, 10,000 traces) |
+| nginx (reverse proxy, load balancing in a Compose profile, GET-only cache exercise) | optional extension, planned after the required items | Official `nginx` image in Compose only, never the retired community Ingress NGINX on Kubernetes |
+| GitHub repository | implemented | Public repository |
+| Jenkins in Compose | implemented | [`ci/`](../ci/README.md): `jenkins/jenkins:2.580.2-lts-jdk21` by digest + Docker CLI, Buildx, Compose, make, uv; 69 pinned plugins; JCasC + Job DSL (no setup wizard, no anonymous access, UI on 127.0.0.1:8081); host Docker socket (root-equivalent, documented); `make ci-up` / `make ci-down`. [`Jenkinsfile`](../Jenkinsfile): section 3 |
+| Image registry | planned (cloud) | No registry for the local pipeline: the deploy runs on the same machine, so the pipeline tags `milk10k-api:<build>-<sha7>` locally and keeps the newest 3. A registry comes with GKE, created by Terraform |
+| API image | implemented | [`serving/Dockerfile`](../serving/Dockerfile): pinned `python:3.12.16-slim-trixie` (tag + digest), pinned requirements then the package with its `api` extra, no torch, uid 10001, healthcheck on `/ready` with the Python standard library, uvicorn without `--workers` |
+| Docker Compose stack | implemented (api + 5 monitoring services) | [`compose.yaml`](../compose.yaml), `make up` / `make down`: images pinned by tag + digest, model mounted read-only, UIs on 127.0.0.1 only, internal network `monitoring` for scrapes and OTLP, every service `cap_drop: ALL` + `no-new-privileges` + a memory limit without swap + json-file log rotation (10 MB × 3), Prometheus starts with the API without waiting for its health, so an API that cannot load its model still shows up in monitoring (`milk10k_model_ready` 0); Grafana waits for a healthy Prometheus; checked with one command from a fresh clone |
+| Compose deploy by the pipeline | implemented | Deploy stage: `docker compose up -d --no-build --wait` with `API_IMAGE_TAG`, model from the CI copy (read-only), Grafana password from a Jenkins credential; then smoke test and HTTP parity against `http://api:8000`. No automatic rollback: a failed deploy is rolled back by hand ([ci/README.md](../ci/README.md)) |
+| minikube with a Helm chart, 3 replicas | planned (bonus) | Helm chart in [`deploy/`](../deploy/README.md); a pipeline stage will run `helm upgrade` |
+| kube-prometheus-stack via Helm | planned (bonus) | locally and on GKE |
+| Terraform, GKE, GCS copy of the package | planned (bonus) | torn down right after the demo to limit cost |
 
 ## 2. `POST /predict` request path
 
@@ -125,7 +126,7 @@ Derived from [`api.py`](../serving/src/milk10k_serving/api.py). The status codes
 listed in that file's docstring and in the OpenAPI `responses`. Form parsing and field validation run inside FastAPI,
 before the body of the `predict` handler. `predict` is an `async def` that waits for a slot of the
 `PredictionLimiter` in the event loop (a waiting request holds no thread), then runs the blocking work in the
-threadpool, so at most `MAX_CONCURRENT_PREDICTIONS` threads do inference (P1-API-05). `/health`, `/ready` and
+threadpool, so at most `MAX_CONCURRENT_PREDICTIONS` threads do inference. `/health`, `/ready` and
 `get_predictor` are `async def` and never wait for the threadpool.
 
 ```mermaid
@@ -213,24 +214,24 @@ same path runs unchanged; the Docker healthcheck polls `/ready` on the container
 
 ```mermaid
 flowchart LR
-    push["git push to main on GitHub"] --> poll["Jenkins pollSCM H/5<br/>main only, no PR builds<br/>P1-CI-07, P1-DEC-15"]
+    push["git push to main on GitHub"] --> poll["Jenkins pollSCM H/5<br/>main only, no PR builds"]
     poll --> setup["Setup: make setup<br/>serving venv with uv, CPython 3.12"]
-    setup --> tests["Unit tests: make test-report<br/>JUnit, coverage >= 90 %<br/>P1-CI-03"]
-    setup --> lint["Lint: make lint<br/>P1-CI-10"]
-    setup --> hyg["Hygiene: make hygiene<br/>P1-CI-08"]
-    tests --> build["Build: docker build<br/>milk10k-api:build-sha7, no registry<br/>P1-CI-05"]
+    setup --> tests["Unit tests: make test-report<br/>JUnit, coverage >= 90 %"]
+    setup --> lint["Lint: make lint"]
+    setup --> hyg["Hygiene: make hygiene<br/>no data, weights or secrets in git"]
+    tests --> build["Build: docker build<br/>milk10k-api:build-sha7, no registry"]
     lint --> build
     hyg --> build
-    build --> deploy["Deploy: fetch_model.sh --check, compose up --wait<br/>attach to milk10k_default, wait for /ready<br/>P1-CI-06"]
-    deploy --> smoke["Smoke: make smoke<br/>P1-BSH-04"]
-    smoke --> parity["Parity: make sample from the read-only dataset<br/>make test-container, 6 lesions, tolerance 0.002<br/>P1-BSH-03, P1-CI-04"]
+    build --> deploy["Deploy: fetch_model.sh --check, compose up --wait<br/>attach to milk10k_default, wait for /ready"]
+    deploy --> smoke["Smoke: make smoke"]
+    smoke --> parity["Parity: make sample from the read-only dataset<br/>make test-container, 6 lesions, tolerance 0.002"]
     parity --> post["post always: detach network, delete sample images<br/>keep 3 newest image tags, archive reports"]
-    build -.-> pushimg["Bonus: push to a registry<br/>M10, P1-GKE-03"]
-    pushimg -.-> helm["Bonus: helm upgrade on minikube<br/>P1-CI-09"]
-    pushimg -.-> approve{"Bonus: approval step<br/>P1-CI-09"}
-    approve -.-> gkedeploy["Deploy to GKE<br/>P1-GKE-05"]
-    tfapply["Terraform apply: GKE, registry, bucket<br/>P1-IAC-01..04"] -.-> gkedeploy
-    gkedeploy -.-> teardown["Teardown: helm uninstall, terraform destroy<br/>P1-GKE-08"]
+    build -.-> pushimg["Bonus: push to a registry"]
+    pushimg -.-> helm["Bonus: helm upgrade on minikube"]
+    pushimg -.-> approve{"Bonus: approval step"}
+    approve -.-> gkedeploy["Deploy to GKE"]
+    tfapply["Terraform apply: GKE, registry, bucket"] -.-> gkedeploy
+    gkedeploy -.-> teardown["Teardown: helm uninstall, terraform destroy"]
 
     classDef implemented fill:#e6f4ea,stroke:#1e7e34,stroke-width:2px,color:#111111
     classDef planned fill:#ffffff,stroke:#666666,stroke-width:1px,stroke-dasharray:5 5,color:#111111
@@ -238,7 +239,7 @@ flowchart LR
     class pushimg,helm,approve,gkedeploy,tfapply,teardown planned
 ```
 
-Unit tests, lint and hygiene run as parallel stages (P1-CI-10); any failure skips every later stage, and the `post`
+Unit tests, lint and hygiene run as parallel stages; any failure skips every later stage, and the `post`
 block still detaches the network and deletes the sample images. Each stage has its own timeout; one executor, no
 concurrent builds. The required path ends with parity against the deployed image; the minikube and GKE branches are
 bonus items. Measured serving cost, which sizes the replicas and limits, is in
@@ -270,23 +271,23 @@ container because the daemon resolves Compose bind mounts on the host. Jenkins j
 build needs `http://api:8000` and leaves it in `post { always }`; the stack's own `make down` therefore removes the
 network cleanly.
 
-## 5. CI decisions (M7)
+## 5. CI design choices
 
-| Decision | Choice |
-|---|---|
-| CI-D1 Docker access | Host socket; non-root Jenkins with the socket's group, no capabilities, UI on 127.0.0.1, `main` only |
-| CI-D2 JENKINS_HOME | `~/milk10k-ci/jenkins_home`, same absolute path inside and outside |
-| CI-D3 Image destination | No registry until M10; local tag `<build>-<sha7>` |
-| CI-D4 Model in CI | Read-only hard-linked copy, `fetch_model.sh --check`, never downloaded |
-| CI-D5 Dataset | Read-only mount at its host path, only for `make_sample.py --data-dir` |
-| CI-D6 Parity | HTTP parity against the deployed API, 479-lesion test deselected |
-| CI-D7 Failed deploy | Manual rollback (documented limitation) |
-| CI-D8 Resources | 2 GiB without extra swap, `-Xmx768m`, 1 executor, started on demand |
-| CI-D9 Tests | Inside the Jenkins container with uv and the Makefile; uv cache under JENKINS_HOME |
-| CI-D10 Jenkins image | 2.580.2 LTS on JDK 21 by digest; no kubectl or Helm in M7 |
-| CI-D11 Configuration | JCasC + Job DSL, setup wizard off, plugins pinned |
-| CI-D12 Secrets | Gitignored `ci/secrets/` files as Compose secrets, loaded by JCasC |
-| CI-D13 Network | Attach at deploy, detach in `post { always }` |
-| CI-D14 Image tag | `image: milk10k-api:${API_IMAGE_TAG:-dev}` in `compose.yaml` |
-| CI-D15 Branch protection | Not now (owner pushes directly) |
-| CI-D16..D18 | Failure drill through Jenkins Replay; Python versions differ by design (CI 3.12.14, image 3.12.16); Grafana credential kept |
+| Topic | Choice | Reason |
+|---|---|---|
+| Docker access | Host socket; non-root Jenkins with the socket's group, no capabilities, UI on 127.0.0.1, `main` only | Jenkins must build images and run Compose on this machine; Docker-in-Docker is privileged too and would deploy a nested copy, not the stack the README shows |
+| JENKINS_HOME | `~/milk10k-ci/jenkins_home`, same absolute path inside and outside | The host daemon resolves Compose bind mounts, so workspace paths must exist on the host |
+| Image destination | No registry for the local pipeline; local tag `<build>-<sha7>` | Build and deploy run on the same machine: no credentials, nothing leaves the laptop |
+| Model in CI | Read-only hard-linked copy, checked with `fetch_model.sh --check`, never downloaded | The download takes minutes; the check takes about a second |
+| Dataset | Read-only mount at its host path, only for `make_sample.py --data-dir` | The sample lesions are dataset images and may not be stored in git |
+| Parity | HTTP parity against the deployed API; the 479-lesion test deselected | Proves the image that actually serves; the full run needs the whole dataset |
+| Failed deploy | Manual rollback (documented limitation) | Keeps the pipeline simple; the newest 3 image tags stay available |
+| Resources | 2 GiB without extra swap, `-Xmx768m`, 1 executor, started on demand | Measured peak about 1.3 GiB; a 16 GB laptop also runs the stack |
+| Tests | Inside the Jenkins container with uv and the Makefile; uv cache under JENKINS_HOME | The same commands as on a developer machine; dependencies downloaded once |
+| Jenkins image | 2.580.2 LTS on JDK 21 by digest; no kubectl or Helm yet | Current LTS; cluster tools come with the Kubernetes part |
+| Configuration | JCasC + Job DSL, setup wizard off, plugins pinned | Jenkins is recreated from the repository alone |
+| Secrets | Gitignored `ci/secrets/` files as Compose secrets, loaded by JCasC | No credentials in git or in the image |
+| Network | Attach to the stack network at deploy, detach in `post { always }` | Jenkins can start before the stack exists, and `make down` removes the network cleanly |
+| Image tag | `image: milk10k-api:${API_IMAGE_TAG:-dev}` in `compose.yaml` | A plain `make up` keeps building `dev`; the pipeline deploys its own tag |
+| Failure drill | Through Jenkins Replay | The failure path is tested without a broken commit in the history |
+| Python versions | CI tests on CPython 3.12.14, the image on 3.12.16 | Parity runs against the image, so it tests the Python that serves |
