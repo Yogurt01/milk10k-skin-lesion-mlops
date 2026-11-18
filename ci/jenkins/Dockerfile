@@ -6,11 +6,13 @@ FROM jenkins/jenkins:2.580.2-lts-jdk21@sha256:74401de6a6f92e1afe1b02d1c8e3d0c33f
 COPY --from=ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 /uv /uvx /usr/local/bin/
 
 USER root
-# Docker CLI and Compose plugin from Docker's apt repository, the same versions as the host daemon (29.9.3 / v5.7.1);
+# Docker CLI, Buildx and Compose plugins from Docker's apt repository, the same versions as the host (29.9.3 / 0.39.0 /
+# v5.7.1; Buildx so `docker build` uses BuildKit and its cache, not the deprecated legacy builder);
 # the repository key is checked against Docker's published fingerprint before use. `make`: the pipeline reuses the
 # repository's Makefile (the base image has none). git and curl come with the base image. No Docker engine.
 ARG DOCKER_CLI_VERSION=5:29.9.3-1~debian.13~trixie
 ARG COMPOSE_PLUGIN_VERSION=5.7.1-1~debian.13~trixie
+ARG BUILDX_PLUGIN_VERSION=0.39.0-1~debian.13~trixie
 ARG DOCKER_KEY_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
 RUN set -eux; \
     apt-get update; \
@@ -23,7 +25,8 @@ RUN set -eux; \
       > /etc/apt/sources.list.d/docker.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-      "docker-ce-cli=${DOCKER_CLI_VERSION}" "docker-compose-plugin=${COMPOSE_PLUGIN_VERSION}"; \
+      "docker-ce-cli=${DOCKER_CLI_VERSION}" "docker-compose-plugin=${COMPOSE_PLUGIN_VERSION}" \
+      "docker-buildx-plugin=${BUILDX_PLUGIN_VERSION}"; \
     apt-get purge -y --auto-remove gnupg; \
     rm -rf /var/lib/apt/lists/*
 
