@@ -12,7 +12,7 @@ CI_HOME ?= $(HOME)/milk10k-ci
 CI_MODEL_SRC ?= artifacts/model_package/final-P1a-kg-onnx
 CI_COMPOSE = CI_HOME=$(CI_HOME) DOCKER_GID=$$(stat -c %g /var/run/docker.sock) docker compose -f ci/compose.yaml
 
-.PHONY: help setup setup-notebooks test test-all test-report test-container lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-down k8s-deploy tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-down k8s-deploy tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -36,8 +36,17 @@ test-report: ## Fast tests + JUnit XML and coverage XML in reports/ (fails below
 	$(SERVING_PY) -m pytest $(PYTEST_FAST) --junit-xml=reports/junit.xml \
 		--cov=milk10k_serving --cov-report=xml:reports/coverage.xml --cov-report=term --cov-fail-under=$(COV_MIN)
 
-test-container: ## HTTP parity (sample lesions) against a running API at API_BASE_URL (default: the Compose port)
-	API_BASE_URL=$(API_BASE_URL) $(SERVING_PY) -m pytest -m parity tests/test_http_parity.py
+test-container: ## HTTP parity (the 6 sample lesions) against a running API at API_BASE_URL; never the 479-lesion run
+	env -u MILK10K_DATA_DIR API_BASE_URL=$(API_BASE_URL) $(SERVING_PY) -m pytest -m parity tests/test_http_parity.py \
+		--deselect tests/test_http_parity.py::test_all_479_reference_lesions_through_http --junit-xml=reports/junit-parity.xml
+
+smoke: ## Smoke test (scripts/smoke_test.py) against a running API at API_BASE_URL
+	python3 scripts/smoke_test.py --base-url $(API_BASE_URL)
+
+sample: ## The 6 sample lesions (training/sample/, gitignored) from a prepared dataset: make sample SAMPLE_DATA_DIR=<dataset>
+	@test -n "$(SAMPLE_DATA_DIR)" || { echo "set SAMPLE_DATA_DIR to the prepared MILK10k dataset folder" >&2; exit 1; }
+	uv run --no-project --python 3.12 --with numpy==2.5.3 --with pandas==3.0.6 --with PyYAML==6.0.3 \
+		python training/sample/make_sample.py --data-dir "$(SAMPLE_DATA_DIR)"
 
 lint: ## Ruff lint + format check
 	$(SERVING_PY) -m ruff check .
