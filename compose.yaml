@@ -39,7 +39,8 @@ services:
     # Prometheus finds every replica through DNS service discovery. Only the published host port would move.
     build:
       context: ./serving
-    image: milk10k-api:dev
+    # dev for the manual flow; the pipeline sets API_IMAGE_TAG=<BUILD_NUMBER>-<sha7> (CI-D3, CI-D14)
+    image: milk10k-api:${API_IMAGE_TAG:-dev}
     env_file:
       - path: .env
         required: false
