@@ -7,8 +7,12 @@ NOTEBOOK_PY := notebooks/.venv/bin/python
 PYTEST_FAST := -m "not parity and not slow"
 COV_MIN ?= 90
 API_BASE_URL ?= http://127.0.0.1:8000
+# Jenkins (ci/compose.yaml, CI-D1..CI-D12): host folder for JENKINS_HOME and the CI model copy (same paths inside)
+CI_HOME ?= $(HOME)/milk10k-ci
+CI_MODEL_SRC ?= artifacts/model_package/final-P1a-kg-onnx
+CI_COMPOSE = CI_HOME=$(CI_HOME) DOCKER_GID=$$(stat -c %g /var/run/docker.sock) docker compose -f ci/compose.yaml
 
-.PHONY: help setup setup-notebooks test test-all test-report test-container lint format hygiene serve fetch-model env export bench up down k8s-deploy tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report test-container lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-down k8s-deploy tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -71,6 +75,21 @@ up: env fetch-model ## Compose stack: .env, fetch + verify the model, build, sta
 
 down: ## Stop the Compose stack; removes its containers and networks (keeps the Prometheus and Grafana volumes)
 	docker compose down
+
+ci-secrets: env ## Jenkins secrets in ci/secrets/ (gitignored, mode 600): random admin password once; Grafana password from .env
+	python3 ci/make_secrets.py
+
+ci-up: ci-secrets ## Jenkins on 127.0.0.1:8081: folders under CI_HOME, hard-linked model copy, build, start, wait until healthy
+	@test -f ci/.env || { echo "ci/.env missing: copy ci/.env.example and set CI_DATASET_DIR" >&2; exit 1; }
+	mkdir -p $(CI_HOME)/jenkins_home $(CI_HOME)/model
+	@if [ ! -f $(CI_HOME)/model/final-P1a-kg-onnx/manifest.json ]; then \
+		cp -al $(CI_MODEL_SRC) $(CI_HOME)/model/final-P1a-kg-onnx && \
+		echo "hard-linked $(CI_MODEL_SRC) to $(CI_HOME)/model/final-P1a-kg-onnx (no extra disk)"; fi
+	scripts/fetch_model.sh --check $(CI_HOME)/model/final-P1a-kg-onnx
+	$(CI_COMPOSE) up -d --build --wait
+
+ci-down: ## Stop Jenkins (JENKINS_HOME with the uv cache, and the model copy, stay under CI_HOME)
+	$(CI_COMPOSE) down -v
 
 k8s-deploy: ## Helm deploy to minikube (not yet implemented: P1-K8S-06)
 	@echo "not yet implemented: P1-K8S-06" >&2; exit 1
