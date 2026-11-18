@@ -1,0 +1,89 @@
+# Jenkins for the MILK10k pipeline (P1-CI-01/02; decisions CI-D1..CI-D13). Its own Compose project, started on
+# demand: `make ci-up` / `make ci-down` (they set CI_HOME and DOCKER_GID; run it through make, not directly).
+# UI: http://127.0.0.1:8081 only. Local settings: ci/.env (template ci/.env.example; gitignored).
+# SECURITY: Jenkins gets the host's Docker socket. Whoever controls a pipeline controls the host (root-equivalent);
+# see ci/README.md.
+name: milk10k-ci
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+secrets:
+  jenkins_admin_password:
+    file: ./secrets/jenkins_admin_password
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password
+
+services:
+  jenkins:
+    build:
+      context: ./jenkins
+    image: milk10k-jenkins:2.580.2-lts-jdk21
+    # Non-root: the image's jenkins user (UID/GID 1000 = the host user owning CI_HOME) plus the group that owns the
+    # Docker socket (GID read with stat by `make ci-up`, CI-D1).
+    user: "1000:1000"
+    group_add:
+      - "${DOCKER_GID:?run via make ci-up (sets DOCKER_GID from the socket)}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # Started on demand; not brought back after a reboot or a crash.
+    restart: "no"
+    logging: *logging
+    environment:
+      # JENKINS_HOME at the same absolute path as on the host: Compose bind mounts started from a workspace are
+      # resolved by the host daemon (CI-D2).
+      JENKINS_HOME: ${CI_HOME:?run via make ci-up}/jenkins_home
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false -Xmx${JENKINS_HEAP:-768m}"
+      # uv cache and uv-managed Python under JENKINS_HOME, so dependencies are downloaded once (CI-D9).
+      UV_CACHE_DIR: ${CI_HOME}/jenkins_home/caches/uv
+      UV_PYTHON_INSTALL_DIR: ${CI_HOME}/jenkins_home/caches/uv-python
+      # The model package for the pipeline (M7b-2), read-only (CI-D4).
+      MODEL_HOST_DIR: ${CI_HOME}/model/final-P1a-kg-onnx
+      # The prepared dataset, read-only, for make_sample.py --data-dir only (M7b-2, P1-BSH-03). Deliberately not
+      # MILK10K_DATA_DIR: that variable would start the 479-lesion test (CI-D6, API-D10).
+      CI_DATASET_DIR: ${CI_DATASET_DIR:?set CI_DATASET_DIR in ci/.env (see ci/.env.example)}
+    secrets:
+      - jenkins_admin_password
+      - grafana_admin_password
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: bind
+        source: ${CI_HOME}/jenkins_home
+        target: ${CI_HOME}/jenkins_home
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CI_HOME}/model
+        target: ${CI_HOME}/model
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CI_DATASET_DIR}
+        target: ${CI_DATASET_DIR}
+        read_only: true
+        bind:
+          create_host_path: false
+    # Web UI on the host's loopback only; the inbound agent port 50000 is not published (and is off in casc.yaml).
+    ports:
+      - "127.0.0.1:${JENKINS_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/login"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+      start_interval: 3s
+    deploy:
+      resources:
+        limits:
+          # Estimate 1.5 GiB (CI-D8), to be replaced by the measured value; no extra swap.
+          memory: ${JENKINS_MEMORY_LIMIT:-1536m}
+    memswap_limit: ${JENKINS_MEMORY_LIMIT:-1536m}

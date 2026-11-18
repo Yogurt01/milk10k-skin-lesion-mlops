@@ -1,0 +1,39 @@
+# Jenkins Configuration as Code (CI-D11). Read at every start (CASC_JENKINS_CONFIG); UI changes are overwritten.
+# ${name} values are secrets read from /run/secrets/<name> (Compose secrets from ci/secrets/, CI-D12); none is in git.
+jenkins:
+  systemMessage: "MILK10k CI: local Jenkins, configured as code (ci/jenkins/casc.yaml). Research model, not a medical device."
+  numExecutors: 1
+  mode: NORMAL
+  # No inbound (JNLP) agent port: builds run on this controller only (CI-D1).
+  slaveAgentPort: -1
+  noUsageStatistics: true
+  disableRememberMe: true
+  markupFormatter: plainText
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          password: "${jenkins_admin_password}"
+  authorizationStrategy:
+    # Anonymous users see nothing (not even read access); the one account administers.
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+unclassified:
+  location:
+    url: "http://127.0.0.1:8081/"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          # Grafana admin password for the deploy stage (M7b-2): Compose requires it at every `up` (DCK-D8).
+          - string:
+              scope: GLOBAL
+              id: grafana-admin-password
+              description: "Grafana admin password (from .env via make ci-secrets)"
+              secret: "${grafana_admin_password}"
+
+jobs:
+  - file: /usr/share/jenkins/casc/jobs.groovy

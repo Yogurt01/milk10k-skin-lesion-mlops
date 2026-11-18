@@ -59,6 +59,8 @@ htmlcov/
 .env
 .env.*
 !.env.example
+# Jenkins secret files (make ci-secrets)
+ci/secrets/
 *.pem
 *.key
 *credentials*.json
