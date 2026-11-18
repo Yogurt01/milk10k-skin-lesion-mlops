@@ -3,9 +3,124 @@
 > **Research model, not a medical device.** It was developed for the ISIC MILK10k research benchmark; its output is
 > not a diagnosis and must not be used for clinical decisions.
 
-**Status:** work in progress.
+A skin-lesion classifier (an ensemble of 15 networks over a dermoscopic image, an optional clinical image and four
+metadata fields; [`training/`](training/README.md)) served as a torch-free FastAPI service with ONNX Runtime, run
+with Docker Compose together with Prometheus, Grafana and Jaeger, and tested, built and deployed by a Jenkins pipeline.
 
-## Run with Docker Compose
+**Status:** the required parts run locally; the Kubernetes and cloud parts are planned.
+
+## Contents
+
+- [Architecture](#architecture)
+- [Repository structure](#repository-structure)
+- [Notebooks](#notebooks)
+- [Install and run on Ubuntu](#install-and-run-on-ubuntu)
+- [API](#api)
+- [Grading evidence](#grading-evidence)
+- [Troubleshooting](#troubleshooting)
+- [Licence](#licence)
+
+## Architecture
+
+```mermaid
+flowchart LR
+    client(["Client<br/>curl, serving/client.py"])
+    release[("GitHub Release model-v1.0.0<br/>model package, sha256 manifest")]
+    subgraph stack["Docker Compose stack, make up"]
+        api["FastAPI API :8000<br/>ONNX Runtime on the CPU, 15 models"]
+        pkg[("Model package<br/>read-only mount")]
+        prom["Prometheus :9090<br/>alert rules"]
+        exporters["node-exporter, cAdvisor<br/>host and container resources"]
+        graf["Grafana :3000<br/>machine resources and API"]
+        jaeger["Jaeger :16686<br/>traces with model spans"]
+    end
+    subgraph cicd["CI/CD"]
+        repo["GitHub main"]
+        jenkins["Jenkins :8081<br/>test, build, deploy, smoke, parity"]
+        registry[("Image registry")]
+        mk["minikube, Helm chart, 3 replicas<br/>+ kube-prometheus-stack"]
+        gke["GKE, Helm chart, 3 replicas"]
+        tf["Terraform"]
+    end
+
+    client -->|"POST /predict"| api
+    release -->|"make fetch-model"| pkg
+    pkg --> api
+    prom -->|scrape /metrics| api
+    prom -->|scrape| exporters
+    graf --> prom
+    api -->|OTLP traces| jaeger
+    repo -->|"poll every 5 min"| jenkins
+    jenkins -->|"docker build, compose up"| api
+    jenkins -.->|push| registry
+    registry -.-> mk
+    registry -.-> gke
+    tf -.->|creates| gke
+
+    classDef implemented fill:#e6f4ea,stroke:#1e7e34,stroke-width:2px,color:#111111
+    classDef planned fill:#ffffff,stroke:#666666,stroke-width:1px,stroke-dasharray:5 5,color:#111111
+    class client,release,api,pkg,prom,exporters,graf,jaeger,repo,jenkins implemented
+    class registry,mk,gke,tf planned
+```
+
+Green and solid: running now. Dashed: planned (Kubernetes and cloud). The detailed diagrams (every component, the
+`POST /predict` request path, the pipeline stages and the CI network) are in [docs/architecture.md](docs/architecture.md).
+
+## Repository structure
+
+```text
+.
+├── training/             the released model package `milk10k` (code, configs, notebooks 01–07, results, model card); kept unchanged
+├── notebooks/            notebook 08: ONNX export, model package, parity check (stage 4 of the notebook requirement)
+├── serving/              the torch-free `milk10k_serving` package, its FastAPI app, the API image (Dockerfile) and a client
+├── tests/                PyTest suite for the serving code (unit, API, parity)
+├── monitoring/           Prometheus (scrape config, alert rules), Grafana (provisioned dashboard), Jaeger configuration
+├── ci/                   Jenkins in its own Compose project, configured as code (plugins, JCasC, job)
+├── scripts/              model download and check, smoke test, repository hygiene check
+├── benchmarks/           the scripts behind the serving measurements
+├── docs/                 architecture, install guide, serving measurements, full parity report
+├── deploy/               Helm chart and Terraform (planned)
+├── compose.yaml          the local stack: API + Prometheus, node-exporter, cAdvisor, Grafana, Jaeger
+├── Jenkinsfile           the pipeline: test → build → deploy → smoke → parity
+├── Makefile              every command of this README (`make help`)
+├── pyproject.toml        repository-wide tool settings (pytest, ruff)
+├── .env.example          template of `.env` (settings and the Grafana password; `.env` is never committed)
+├── .gitignore
+└── LICENSE               MIT for the code; data and model terms in Licence below
+```
+
+## Notebooks
+
+The four stages of the notebook requirement:
+
+| Stage | Notebook |
+|---|---|
+| 1. EDA | [01_data_overview](training/notebooks/01_data_overview.ipynb), [02_eda](training/notebooks/02_eda.ipynb) |
+| 2. Data processing (cleaning, split) | [03_preprocessing_and_features](training/notebooks/03_preprocessing_and_features.ipynb) (folds built in 01) |
+| 3. Modeling (training and evaluation) | [04_modeling_and_training](training/notebooks/04_modeling_and_training.ipynb), [05_evaluation](training/notebooks/05_evaluation.ipynb), [06_experiments_summary](training/notebooks/06_experiments_summary.ipynb) |
+| 4. Prepare for deployment | [07_inference](training/notebooks/07_inference.ipynb) (inference and parity), [08_export_for_deployment](notebooks/08_export_for_deployment.ipynb) (ONNX export and model package) |
+
+The notebooks are stored with their outputs, so they can be read on GitHub without running them. Running them needs
+the MILK10k data and the checkpoints ([training/README.md](training/README.md#quick-start),
+[notebooks/README.md](notebooks/README.md)).
+
+## Install and run on Ubuntu
+
+### Prerequisites
+
+Ubuntu with Docker Engine and its Compose plugin, your user in the `docker` group, `git`, `make`, `curl`, `python3`
+and [uv](https://docs.astral.sh/uv/) for the tests. Step-by-step commands, and the reference machine all numbers come
+from (Ubuntu 26.04 LTS, 16 GB RAM, 16 CPU threads, Docker 29.9.3, Compose v5.7.1):
+[docs/install-ubuntu.md](docs/install-ubuntu.md).
+
+### Get the code
+
+```bash
+git clone https://github.com/Yogurt01/milk10k-skin-lesion-mlops.git
+cd milk10k-skin-lesion-mlops
+```
+
+### Run the stack with Docker Compose
 
 Needs Docker with Compose v2, `curl` and `python3`. From the repository root:
 
@@ -32,6 +147,34 @@ make down    # stops it (Prometheus and Grafana data volumes are kept; `docker c
   provisioning and dashboard, Jaeger configuration). node-exporter and cAdvisor read host folders read-only; cAdvisor
   also reads the Docker and containerd sockets to name containers, which gives it control over Docker (see
   `compose.yaml`).
+
+### Tests
+
+```bash
+make setup    # serving venv in serving/.venv with uv (Python 3.12, pinned requirements)
+make test     # fast tests: unit and API, no model package needed
+make lint     # ruff
+```
+
+The parity tests compare the API with the stored reference predictions of the released model (tolerance 0.002 per
+probability). They need six sample lesions from the MILK10k test set, which are dataset images and never in git. With
+the dataset downloaded from the [ISIC Archive](https://challenge.isic-archive.com/data/#milk10k) and prepared as in
+[training/data/README.md](training/data/README.md) (a folder with `test_metadata.csv`, `test/derm/`,
+`test/clinical/`):
+
+```bash
+make sample SAMPLE_DATA_DIR=/path/to/prepared/milk10k   # copies the 6 sample lesions into training/sample/ (gitignored)
+make test-all         # every test, incl. parity in-process and through HTTP
+make test-container   # parity through HTTP against the running stack from make up
+```
+
+All 479 test lesions through the API: [docs/parity_full.md](docs/parity_full.md) (479 / 479 within the tolerance).
+
+### CI with Jenkins
+
+A local Jenkins (Compose project `milk10k-ci`, UI on http://127.0.0.1:8081) runs the [Jenkinsfile](Jenkinsfile) on
+every push to `main`: unit tests ‖ lint ‖ hygiene → build the API image → deploy with Compose → smoke test → parity
+on the deployed API. Setup (`make ci-up`), security notes and pitfalls: [ci/README.md](ci/README.md).
 
 ## API
 
@@ -67,7 +210,7 @@ curl -s -X POST localhost:8000/predict \
 curl -s localhost:8000/openapi.json | python3 -m json.tool | head
 ```
 
-Python client (standard library only): `python serving/client.py ISIC_0145429` prints the diagnosis, P(malignant)
+Python client (standard library only): `python3 serving/client.py ISIC_0145429` prints the diagnosis, P(malignant)
 and the disclaimer for a sample lesion (`--base-url`, `--sample-dir` to change the defaults).
 
 **Form fields of `/predict`:** `derm_image` (required), `clinical_image` (optional; a missing or undecodable clinical
@@ -95,6 +238,32 @@ Allowed values come from the model package's `tabular_encoding.json`.
 - **Request ids:** every response carries `X-Request-ID` (the client's value if it is 1-64 characters of
   `[A-Za-z0-9._:-]`, otherwise a generated one); the server's log lines for that request carry it too. Logs contain
   ids, sizes, status and latency, never images or metadata values.
+
+## Grading evidence
+
+| Item | Evidence |
+|---|---|
+| Python 5% | Packaged code: [`serving/`](serving/) (`milk10k_serving`, [pyproject.toml](serving/pyproject.toml)) and [`training/`](training/) (`milk10k`); notebooks: [Notebooks](#notebooks) |
+| Ubuntu 5% | [Install and run on Ubuntu](#install-and-run-on-ubuntu), [docs/install-ubuntu.md](docs/install-ubuntu.md), [Troubleshooting](#troubleshooting) |
+| FastAPI 5% | [`api.py`](serving/src/milk10k_serving/api.py); endpoints in [API](#api); OpenAPI at `/docs` |
+| PyTest in CI/CD 5% | [`tests/`](tests/README.md); stage Test of the [Jenkinsfile](Jenkinsfile) (JUnit report, coverage at least 90 %) |
+| Docker Compose 10% | [compose.yaml](compose.yaml); one command: `make up` ([Run the stack](#run-the-stack-with-docker-compose)) |
+| Prometheus 5% | [`metrics.py`](serving/src/milk10k_serving/metrics.py) (`/metrics`); [monitoring/prometheus/](monitoring/prometheus/) (scrape config, alert rules with unit tests) |
+| Grafana: machine resources 5% | [monitoring/grafana/](monitoring/grafana/): provisioned dashboard with host CPU, memory, disk and network, per-container resources and API panels |
+| Jaeger with OpenTelemetry 5% | [`tracing.py`](serving/src/milk10k_serving/tracing.py): one trace per `/predict` with spans for decoding, preprocessing and each model's inference; [monitoring/jaeger/](monitoring/jaeger/config.yaml) |
+| Jenkins 5% | [Jenkinsfile](Jenkinsfile) (test → build → deploy → smoke → parity); Jenkins as code in [ci/](ci/README.md) |
+| Practical 30%: correct results | Parity tests [test_predictor_parity.py](tests/test_predictor_parity.py) (in-process) and [test_http_parity.py](tests/test_http_parity.py) (HTTP), run by the Jenkins Parity stage against the deployed image; all 479 test lesions: [docs/parity_full.md](docs/parity_full.md) |
+
+## Troubleshooting
+
+| Problem | Check | What to look for |
+|---|---|---|
+| `make up` fails with "port is already allocated" | `ss -tlnp` | Something else listens on 127.0.0.1 port 8000, 9090, 3000 or 16686 (8081 for Jenkins). Processes of other users, such as `docker-proxy`, are only named with `sudo` |
+| `permission denied` on `/var/run/docker.sock` | `id -nG` | `docker` is missing: see [Docker without sudo](docs/install-ubuntu.md#docker-without-sudo), then log in again |
+| A container restarts or is unhealthy | `docker compose ps`, then `docker compose logs api` | The API waits for its model package; `/ready` explains a failed load |
+| The Docker daemon misbehaves | `journalctl -u docker --since '-10 min' --no-pager` | Errors from `dockerd` (readable for members of the `adm` group or with `sudo`) |
+| Out of memory, the machine slows down | `free -h`, `top -bn1 \| head -12` | `available` must leave room for the stack (about 2.4 GiB); otherwise close applications before `make up` |
+| Out of disk | `df -h /`, `docker system df` | Images and build cache take several GB. Remove only this project's images (`docker image ls milk10k-api`) |
 
 ## Licence
 
