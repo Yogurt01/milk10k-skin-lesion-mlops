@@ -101,7 +101,7 @@ Parity runs over HTTP against the deployed image, so it tests the Python that ac
     - The network declared `external`: Jenkins cannot start before the stack exists.
     - The same name declared non-external: whichever project starts first owns it, and either `down` leaves it
       behind.
-- **Resources:** memory limit 1.5 GiB with no extra swap (`memswap_limit` = limit), Java heap 768 MiB, 1 executor.
+- **Resources:** memory limit 2 GiB with no extra swap (`memswap_limit` = limit), Java heap 768 MiB, 1 executor.
   The measured figures are in the project's checklist (P1-CON-05).
 
 ## Known pitfalls and limitations

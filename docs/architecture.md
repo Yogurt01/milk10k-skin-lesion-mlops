@@ -281,7 +281,7 @@ network cleanly.
 | CI-D5 Dataset | Read-only mount at its host path, only for `make_sample.py --data-dir` |
 | CI-D6 Parity | HTTP parity against the deployed API, 479-lesion test deselected |
 | CI-D7 Failed deploy | Manual rollback (documented limitation) |
-| CI-D8 Resources | 1.5 GiB without extra swap, `-Xmx768m`, 1 executor, started on demand |
+| CI-D8 Resources | 2 GiB without extra swap, `-Xmx768m`, 1 executor, started on demand |
 | CI-D9 Tests | Inside the Jenkins container with uv and the Makefile; uv cache under JENKINS_HOME |
 | CI-D10 Jenkins image | 2.580.2 LTS on JDK 21 by digest; no kubectl or Helm in M7 |
 | CI-D11 Configuration | JCasC + Job DSL, setup wizard off, plugins pinned |

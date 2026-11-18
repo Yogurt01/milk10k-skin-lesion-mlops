@@ -84,6 +84,7 @@ services:
     deploy:
       resources:
         limits:
-          # Estimate 1.5 GiB (CI-D8), to be replaced by the measured value; no extra swap.
-          memory: ${JENKINS_MEMORY_LIMIT:-1536m}
-    memswap_limit: ${JENKINS_MEMORY_LIMIT:-1536m}
+          # 2 GiB, no extra swap: a full pipeline run peaked at about 1.3 GiB and the peak grew from build to build;
+          # with no swap, running out of memory would kill a build in the middle of a deploy.
+          memory: ${JENKINS_MEMORY_LIMIT:-2048m}
+    memswap_limit: ${JENKINS_MEMORY_LIMIT:-2048m}
