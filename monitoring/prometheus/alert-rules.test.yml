@@ -1,7 +1,7 @@
 # Unit tests for alert-rules.yml (P1-OBS-08). Run from the repository root:
 #   docker run --rm --entrypoint promtool -v "$PWD/monitoring/prometheus:/p:ro" -w /p \
 #     prom/prometheus:v3.16.0 test rules alert-rules.test.yml
-# Each rule has a case where it fires and one where it does not. Series are synthetic; the rules are not changed here.
+# Each rule has a case where it fires and one where it does not. Series are synthetic.
 rule_files:
   - alert-rules.yml
 
@@ -29,6 +29,54 @@ tests:
             exp_annotations:
               summary: "API target 10.0.0.2:8000 cannot be scraped"
               description: "Prometheus has not reached /metrics of 10.0.0.2:8000 for 1 minute."
+
+  # ApiDown, no target at all (P1-OBS-11): the only api target goes stale at 1m (removed from DNS discovery), so
+  # absent() is true from then on: pending at 1m30s, firing at 3m, with job="api" and no instance label.
+  - interval: 15s
+    input_series:
+      - series: 'up{job="api", instance="10.0.0.2:8000"}'
+        values: "1x3 stale"
+      - series: 'up{job="node", instance="node-exporter:9100"}'  # other jobs do not count
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 45s  # target still there and up
+        alertname: ApiDown
+        exp_alerts: []
+      - eval_time: 1m30s  # absent for 30 s: pending, not firing
+        alertname: ApiDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ApiDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: api
+            exp_annotations:
+              summary: "No API target in Prometheus"
+              description: "Service discovery has found no api container for 1 minute."
+
+  # ApiModelNotReady: a load that never finishes (0 for 5 minutes) fires after 2 minutes; a normal start
+  # (0 for the first scrape, then 1) never fires.
+  - interval: 15s
+    input_series:
+      - series: 'milk10k_model_ready{job="api", instance="10.0.0.2:8000"}'
+        values: "0x20"
+      - series: 'milk10k_model_ready{job="api", instance="10.0.0.3:8000"}'
+        values: "0 1x19"
+    alert_rule_test:
+      - eval_time: 1m30s  # 0 for 1m30s: pending, not firing
+        alertname: ApiModelNotReady
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ApiModelNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: api
+              instance: 10.0.0.2:8000
+            exp_annotations:
+              summary: "Model not loaded on API target 10.0.0.2:8000"
+              description: "milk10k_model_ready has been 0 for 2 minutes on 10.0.0.2:8000; /ready shows the load error."
 
   # ApiHighErrorRate: 50 % of /predict responses are 503 for minutes -> fires; 5 % -> does not.
   - interval: 15s

@@ -3,14 +3,34 @@
 groups:
   - name: milk10k-api
     rules:
+      # Two cases (P1-OBS-11): a known target that cannot be scraped (up == 0, labels per instance), and no api
+      # target at all: DNS discovery of `api` finds no container (e.g. `docker compose rm -sf api`), so the `up`
+      # series go stale and only absent() sees it (labels: job="api", no instance).
       - alert: ApiDown
-        expr: up{job="api"} == 0
+        expr: up{job="api"} == 0 or absent(up{job="api"})
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "API target {{ $labels.instance }} cannot be scraped"
-          description: "Prometheus has not reached /metrics of {{ $labels.instance }} for 1 minute."
+          summary: >-
+            {{ if $labels.instance }}API target {{ $labels.instance }} cannot be scraped{{ else
+            }}No API target in Prometheus{{ end }}
+          description: >-
+            {{ if $labels.instance }}Prometheus has not reached /metrics of {{ $labels.instance }} for 1 minute.{{ else
+            }}Service discovery has found no api container for 1 minute.{{ end }}
+
+      # The process answers /metrics, but the model package is not loaded: /predict returns 503. A load takes
+      # 2.4-3.2 s (load_seconds measured in P1-DCK-02 and P1-DCK-07); 2 minutes is well above that and above the
+      # container healthcheck's 60 s start period, so only a failed or stuck load fires, not a normal start.
+      # When the API is down the series is absent and ApiDown fires instead.
+      - alert: ApiModelNotReady
+        expr: milk10k_model_ready{job="api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model not loaded on API target {{ $labels.instance }}"
+          description: "milk10k_model_ready has been 0 for 2 minutes on {{ $labels.instance }}; /ready shows the load error."
 
       # Share of /predict responses with a 5xx status, including 503 (model not ready, or busy: the limiter's queue
       # was full). Needs some traffic: with no /predict requests the ratio is empty and the alert stays inactive.
