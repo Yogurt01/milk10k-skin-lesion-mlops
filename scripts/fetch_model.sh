@@ -3,7 +3,8 @@
 # manifest (P1-BSH-02). No token and no gh CLI: plain HTTPS with curl.
 #
 # Usage: scripts/fetch_model.sh [--check] [DEST_DIR]
-#   DEST_DIR  default: artifacts/model_package/final-P1a-kg-onnx (relative to the repository root)
+#   DEST_DIR  default: MODEL_HOST_DIR as Compose reads it (environment, else .env), else
+#             artifacts/model_package/final-P1a-kg-onnx; relative MODEL_HOST_DIR values are relative to the repo root
 #   --check   verify DEST_DIR only (no download); exit 1 if any file is missing or differs
 #
 # Resumable and idempotent: files whose size and sha256 already match are skipped; an interrupted download continues
@@ -28,7 +29,26 @@ log() { echo "fetch_model: $*"; }
 CHECK_ONLY=0
 if [[ "${1:-}" == "--check" ]]; then CHECK_ONLY=1; shift; fi
 [[ "${1:-}" == -* ]] && die "unknown option: $1 (usage: $0 [--check] [DEST_DIR])"
-DEST="${1:-${ROOT}/artifacts/model_package/final-P1a-kg-onnx}"
+
+# Without DEST_DIR, use the folder Compose mounts (compose.yaml: ${MODEL_HOST_DIR:-<default>}), resolved the same
+# way: the shell variable wins over .env; empty or unset means the default; a relative path is relative to the
+# repository root (Compose's project directory). Only a plain or quoted MODEL_HOST_DIR=value line in .env is read.
+DEFAULT_DEST="./artifacts/model_package/final-P1a-kg-onnx"
+if [[ $# -ge 1 ]]; then
+  DEST="$1" DEST_FROM="argument"
+else
+  if [[ -v MODEL_HOST_DIR ]]; then
+    DEST="$MODEL_HOST_DIR" DEST_FROM="MODEL_HOST_DIR (environment)"
+  else
+    DEST=""
+    if [[ -f "$ROOT/.env" ]]; then DEST="$(sed -n 's/^[[:space:]]*MODEL_HOST_DIR=//p' "$ROOT/.env" | tail -n 1)"; fi
+    DEST="${DEST%$'\r'}"
+    if [[ "$DEST" =~ ^\"(.*)\"$ || "$DEST" =~ ^\'(.*)\'$ ]]; then DEST="${BASH_REMATCH[1]}"; fi
+    DEST_FROM="MODEL_HOST_DIR (.env)"
+  fi
+  if [[ -z "$DEST" ]]; then DEST="$DEFAULT_DEST" DEST_FROM="default"; fi
+  [[ "$DEST" == /* ]] || DEST="$ROOT/$DEST"
+fi
 
 for tool in curl python3; do command -v "$tool" >/dev/null || die "'$tool' is required"; done
 if command -v sha256sum >/dev/null; then
@@ -46,7 +66,7 @@ download() {  # url, target .part file; resumes a partial .part
 
 mkdir -p "$DEST"
 DEST="$(cd "$DEST" && pwd)"
-log "package directory: $DEST"
+log "package directory: $DEST (from $DEST_FROM)"
 
 # 1. manifest.json, pinned by sha256
 manifest="$DEST/manifest.json"
