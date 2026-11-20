@@ -11,8 +11,12 @@ API_BASE_URL ?= http://127.0.0.1:8000
 CI_HOME ?= $(HOME)/milk10k-ci
 CI_MODEL_SRC ?= artifacts/model_package/final-P1a-kg-onnx
 CI_COMPOSE = CI_HOME=$(CI_HOME) DOCKER_GID=$$(stat -c %g /var/run/docker.sock) docker compose -f ci/compose.yaml
+# Local Kubernetes (k8s/README.md): minikube profile = kube context, namespace, Helm release
+K8S_PROFILE ?= milk10k
+K8S_NAMESPACE ?= milk10k
+K8S_RELEASE ?= milk10k-api
 
-.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-down k8s-deploy tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-down k8s-deploy k8s-stop tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -100,8 +104,17 @@ ci-up: ci-secrets ## Jenkins on 127.0.0.1:8081: folders under CI_HOME, hard-link
 ci-down: ## Stop Jenkins (JENKINS_HOME with the uv cache, and the model copy, stay under CI_HOME)
 	$(CI_COMPOSE) down -v
 
-k8s-deploy: ## Helm deploy to minikube (not yet implemented: P1-K8S-06)
-	@echo "not yet implemented: P1-K8S-06" >&2; exit 1
+k8s-deploy: ## Deploy the API to the running minikube profile: make k8s-deploy TAG=<image tag> [REPLICAS=n]
+	@test -n "$(TAG)" || { echo "usage: make k8s-deploy TAG=<image tag> [REPLICAS=n] (a pinned tag, never latest)" >&2; exit 2; }
+	minikube -p $(K8S_PROFILE) image ls | grep -qxF "docker.io/library/milk10k-api:$(TAG)" \
+		|| minikube -p $(K8S_PROFILE) image load milk10k-api:$(TAG)
+	kubectl --context $(K8S_PROFILE) apply -f k8s/namespace.yaml
+	helm upgrade --install $(K8S_RELEASE) k8s/milk10k-api --kube-context $(K8S_PROFILE) -n $(K8S_NAMESPACE) \
+		-f k8s/values-local.yaml --set image.tag=$(TAG) $(if $(REPLICAS),--set replicaCount=$(REPLICAS))
+	kubectl --context $(K8S_PROFILE) -n $(K8S_NAMESPACE) rollout status deployment/$(K8S_RELEASE) --timeout=300s
+
+k8s-stop: ## Stop the minikube profile (frees its memory; cluster, loaded images and model mount stay for the next start)
+	minikube stop -p $(K8S_PROFILE)
 
 tf-plan: ## Terraform plan for GKE (not yet implemented: P1-IAC-04)
 	@echo "not yet implemented: P1-IAC-04" >&2; exit 1
