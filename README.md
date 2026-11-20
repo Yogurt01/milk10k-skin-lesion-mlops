@@ -241,18 +241,20 @@ Allowed values come from the model package's `tabular_encoding.json`.
 
 ## Grading evidence
 
-| Item | Evidence |
-|---|---|
-| Python 5% | Packaged code: [`serving/`](serving/) (`milk10k_serving`, [pyproject.toml](serving/pyproject.toml)) and [`training/`](training/) (`milk10k`); notebooks: [Notebooks](#notebooks) |
-| Ubuntu 5% | [Install and run on Ubuntu](#install-and-run-on-ubuntu), [docs/install-ubuntu.md](docs/install-ubuntu.md), [Troubleshooting](#troubleshooting) |
-| FastAPI 5% | [`api.py`](serving/src/milk10k_serving/api.py); endpoints in [API](#api); OpenAPI at `/docs` |
-| PyTest in CI/CD 5% | [`tests/`](tests/README.md); stage Test of the [Jenkinsfile](Jenkinsfile) (JUnit report, coverage at least 90 %) |
-| Docker Compose 10% | [compose.yaml](compose.yaml); one command: `make up` ([Run the stack](#run-the-stack-with-docker-compose)) |
-| Prometheus 5% | [`metrics.py`](serving/src/milk10k_serving/metrics.py) (`/metrics`); [monitoring/prometheus/](monitoring/prometheus/) (scrape config, alert rules with unit tests) |
-| Grafana: machine resources 5% | [monitoring/grafana/](monitoring/grafana/): provisioned dashboard with host CPU, memory, disk and network, per-container resources and API panels |
-| Jaeger with OpenTelemetry 5% | [`tracing.py`](serving/src/milk10k_serving/tracing.py): one trace per `/predict` with spans for decoding, preprocessing and each model's inference; [monitoring/jaeger/](monitoring/jaeger/config.yaml) |
-| Jenkins 5% | [Jenkinsfile](Jenkinsfile) (test → build → deploy → smoke → parity); Jenkins as code in [ci/](ci/README.md) |
-| Practical 30%: correct results | Parity tests [test_predictor_parity.py](tests/test_predictor_parity.py) (in-process) and [test_http_parity.py](tests/test_http_parity.py) (HTTP), run by the Jenkins Parity stage against the deployed image; all 479 test lesions: [docs/parity_full.md](docs/parity_full.md) |
+| Item | Evidence | Screenshot |
+|---|---|---|
+| Python 5% | Packaged code: [`serving/`](serving/) (`milk10k_serving`, [pyproject.toml](serving/pyproject.toml)) and [`training/`](training/) (`milk10k`); notebooks: [Notebooks](#notebooks) | — |
+| Ubuntu 5% | [Install and run on Ubuntu](#install-and-run-on-ubuntu), [docs/install-ubuntu.md](docs/install-ubuntu.md), [Troubleshooting](#troubleshooting) | — |
+| FastAPI 5% | [`api.py`](serving/src/milk10k_serving/api.py); endpoints in [API](#api); OpenAPI at `/docs` | — |
+| PyTest in CI/CD 5% | [`tests/`](tests/README.md); stage Test of the [Jenkinsfile](Jenkinsfile) (JUnit report, coverage at least 90 %) | <a href="docs/images/jenkins-tests.png"><img src="docs/images/jenkins-tests.png" alt="Jenkins test result of build 11: 158 tests in 12 test modules, all passed" width="240"></a> |
+| Docker Compose 10% | [compose.yaml](compose.yaml); one command: `make up` ([Run the stack](#run-the-stack-with-docker-compose)) | <a href="docs/images/grafana-containers.png"><img src="docs/images/grafana-containers.png" alt="Grafana containers row: CPU, memory, disk and network of each container of the Compose stack" width="240"></a> |
+| Prometheus 5% | [`metrics.py`](serving/src/milk10k_serving/metrics.py) (`/metrics`); [monitoring/prometheus/](monitoring/prometheus/) (scrape config, alert rules with unit tests) | <a href="docs/images/prometheus-targets.png"><img src="docs/images/prometheus-targets.png" alt="Prometheus target health: api, cadvisor, node and prometheus, each 1/1 up" width="240"></a> |
+| Grafana: machine resources 5% | [monitoring/grafana/](monitoring/grafana/): provisioned dashboard with host CPU, memory, disk and network, per-container resources and API panels | <a href="docs/images/grafana-host.png"><img src="docs/images/grafana-host.png" alt="Grafana host row: CPU, memory, disk space, disk I/O and network of the machine" width="240"></a><br><a href="docs/images/grafana-api.png"><img src="docs/images/grafana-api.png" alt="Grafana API row: request rate, /predict latency, predictions running, 503 rejections, inference time, model ready" width="240"></a> |
+| Jaeger with OpenTelemetry 5% | [`tracing.py`](serving/src/milk10k_serving/tracing.py): one trace per `/predict` with spans for decoding, preprocessing and each model's inference; [monitoring/jaeger/](monitoring/jaeger/config.yaml) | <a href="docs/images/jaeger-trace.png"><img src="docs/images/jaeger-trace.png" alt="Jaeger trace of one POST /predict: queue wait, validation, decoding, preprocessing and inference with 15 ensemble member spans" width="240"></a> |
+| Jenkins 5% | [Jenkinsfile](Jenkinsfile) (test → build → deploy → smoke → parity); Jenkins as code in [ci/](ci/README.md) | <a href="docs/images/jenkins-pipeline.png"><img src="docs/images/jenkins-pipeline.png" alt="Jenkins build 11 started by an SCM change: checkout, setup, test, build, deploy, smoke, parity, all green" width="240"></a> |
+| Practical 30%: correct results | Parity tests [test_predictor_parity.py](tests/test_predictor_parity.py) (in-process) and [test_http_parity.py](tests/test_http_parity.py) (HTTP), run by the Jenkins Parity stage against the deployed image; all 479 test lesions: [docs/parity_full.md](docs/parity_full.md) | <a href="docs/images/jenkins-tests.png"><img src="docs/images/jenkins-tests.png" alt="Jenkins test result of build 11: 158 tests passed, 0 failed, including the HTTP parity test against the deployed image" width="240"></a> |
+
+Screenshots from the reference machine (2026-11-20); click one for the full size.
 
 ## Troubleshooting
 
