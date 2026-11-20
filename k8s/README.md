@@ -20,9 +20,9 @@ Kubernetes Service, on a local minikube cluster. Everything stays on your machin
 - The model package in `artifacts/model_package/final-P1a-kg-onnx` (`make fetch-model`, about 1.4 GB).
 - The API image built locally, e.g. `docker build -t milk10k-api:<tag> serving` (any tag except `latest`).
 - **Memory.** One replica uses about 1.9 GiB once the model is loaded (plus file cache the kernel can reclaim), the
-  cluster itself about 0.6 GiB. Three
-  replicas need about 6.3 GiB free, so on a 16 GB laptop stop the Compose stack (`make down`) and Jenkins
-  (`make ci-down`) first, and close what you can. Check with `free -h`.
+  empty cluster about 0.6 GiB; with 3 replicas the node used 6.3 GiB in total. On a 16 GB laptop, stop the Compose
+  stack (`make down`) and Jenkins (`make ci-down`) first and close what you can: the 3-replica checks below were run
+  with about 10 GiB available before the cluster started, and about 4 GiB stayed available. Check with `free -h`.
 
 ### Install minikube and Helm (Linux x86-64)
 
@@ -73,6 +73,12 @@ kubectl --context milk10k -n milk10k rollout status deployment/milk10k-api
 ```
 
 Add `--set replicaCount=2` (or 1) if the machine does not have the memory for 3.
+
+The same steps as one command (the image is loaded only if the node does not have it yet):
+
+```bash
+make k8s-deploy TAG=$TAG                  # optional: REPLICAS=2
+```
 
 What each Pod does when it starts:
 
@@ -127,10 +133,12 @@ kubectl --context milk10k -n milk10k delete pod <one of the pods>
 kubectl --context milk10k -n milk10k get pods -w
 ```
 
-**Rolling update.** Build and load a new tag, then run the same `helm upgrade` with it. Pods are replaced one at a
-time (`maxSurge: 0`, `maxUnavailable: 1`): a fourth 2.5 GiB Pod would not fit the memory budget, so one replica
-fewer serves while each Pod is swapped. Each old Pod waits 5 s before it stops so the Service stops sending it new
-connections first.
+**Rolling update.** Build and load a new tag, then run the same `helm upgrade` with it (or `make k8s-deploy
+TAG=<new tag>`). Pods are replaced one at a time (`maxSurge: 0`, `maxUnavailable: 1`): no extra 2.5 GiB Pod is
+created on purpose, so one replica fewer serves while each Pod is swapped. This is not a hard cap: the Deployment
+does not count Pods that are still terminating, so an old Pod can briefly run next to its replacement (4 Pods were
+seen during a 3-replica rollout). Each old Pod waits 5 s (`preStop` sleep) before it stops, so the Service can stop
+sending it new connections first. That pause is a precaution: rollouts without it were not tested.
 
 ```bash
 helm history milk10k-api --kube-context milk10k -n milk10k
@@ -143,7 +151,7 @@ is overwritten by the next `helm upgrade`.
 ## 4. Stop or remove
 
 ```bash
-minikube stop -p milk10k        # frees the memory; keeps the cluster, the loaded images and the mount
+minikube stop -p milk10k        # or: make k8s-stop. Frees the memory; keeps the cluster, the loaded images and the mount
 minikube start -p milk10k       # start it again later
 helm uninstall milk10k-api --kube-context milk10k -n milk10k        # remove the API only
 minikube delete -p milk10k      # remove the whole cluster
@@ -159,7 +167,22 @@ minikube delete -p milk10k      # remove the whole cluster
 | Model | Host folder mounted read-only (hostPath), sha256 check in an init container | 1.4 GB is not downloaded again for every Pod, restart and rollout; the weights stay out of the image |
 | Threads | 4 ONNX Runtime threads, 1 running prediction per Pod (queue of 8) | 3 Pods use 12 of 16 CPU threads; a second running prediction added only about 6% throughput in measurements and more memory |
 | Memory | request = limit = 2.5 GiB per Pod | Measured peak 2.1 GiB in a container, plus room for queued uploads |
-| Probes | startup and readiness on `/ready`, liveness on `/health` (timeout 5 s, 6 failures) | `/ready` is 200 only once the model is loaded; `/health` does no work and stays fast under load, and the generous liveness settings never restart a busy Pod |
+| Probes | startup and readiness on `/ready`, liveness on `/health` (timeout 5 s, 6 failures) | `/ready` is 200 only once the model is loaded; `/health` does no work and stays fast under load, and the generous liveness settings are meant to leave a busy Pod alone (not tested under CPU throttling) |
+| Rollout | `maxSurge: 0`, `maxUnavailable: 1`, 5 s `preStop` sleep | No extra Pod is created on purpose (a terminating Pod can still overlap briefly); the pause is a precaution against new connections to a stopping Pod |
 | Security | non-root (uid 10001), all capabilities dropped, no privilege escalation, seccomp `RuntimeDefault`, read-only root filesystem with an `emptyDir` for `/tmp`, no service account token | The API needs none of these privileges; `/tmp` holds large uploads |
+
+## What was checked
+
+On the 16 GB reference laptop (minikube v1.39.0, Kubernetes v1.37.0), with 3 replicas:
+
+| Check | Result |
+|---|---|
+| 3 Pods started together | 3/3 Ready in 10.6 s; each init container logged `sha256 check passed: 18 files match manifest.json`; model load 3.3–3.4 s |
+| Requests spread by the Service | 30 new connections from inside the cluster: 11 / 7 / 12 per Pod |
+| Smoke test and parity (6 sample lesions) | smoke test passed; max difference to the reference 2.55e-04 (tolerance 0.002) |
+| One Pod deleted under traffic | 183 / 183 requests answered 200; 3/3 Ready again after 8.7 s |
+| Rolling update to another image tag under traffic | 373 / 373 requests answered 200; 25.3 s |
+| Upload above 1 MB (spooled to `/tmp`) | 200 with the read-only root filesystem |
+| Memory | about 1.9 GiB per Pod (no swap, no OOM kill); node 6.3 GiB |
 
 Measured serving cost (memory, latency, threads): [docs/serving_measurements.md](../docs/serving_measurements.md).

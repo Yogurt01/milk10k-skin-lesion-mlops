@@ -46,8 +46,9 @@ initResources:
     cpu: "1"
     memory: 512Mi
 
-# Replace one Pod at a time and never run an extra Pod: a fourth 2.5 GiB Pod does not fit the local memory budget.
-# During a rollout, replicaCount - 1 Pods keep serving.
+# Replace one Pod at a time and create no extra Pod: a fourth 2.5 GiB Pod does not fit the local memory budget.
+# During a rollout, replicaCount - 1 Pods keep serving. Not a hard cap: the Deployment does not count terminating
+# Pods, so an old Pod can briefly overlap with its replacement.
 strategy:
   maxSurge: 0
   maxUnavailable: 1
@@ -67,7 +68,8 @@ probes:
     timeoutSeconds: 2
     failureThreshold: 3
   # /health is async and does no work; measured at a few milliseconds even with the prediction queue full.
-  # Generous timeout and threshold: a busy Pod must never be restarted; a real hang is still caught in ~60 s.
+  # Generous timeout and threshold so a busy Pod is not restarted (not tested under CPU throttling); a real hang is
+  # still caught in ~60 s.
   liveness:
     path: /health
     periodSeconds: 10
@@ -75,7 +77,8 @@ probes:
     failureThreshold: 6
 
 # Kept alive for a few seconds after it is marked for deletion, so the Service stops sending new connections
-# before the server stops accepting them (endpoint removal is asynchronous).
+# before the server stops accepting them (endpoint removal is asynchronous). A precaution: rollouts without it
+# were not tested.
 preStopSleepSeconds: 5
 terminationGracePeriodSeconds: 30
 

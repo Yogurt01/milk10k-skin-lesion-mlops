@@ -4,9 +4,9 @@
 
 Status as of 2026-11-20: the API, its model package and the monitoring stack run with one command (`make up`); a
 local Jenkins, configured as code, runs the pipeline test → build → deploy → smoke → parity on every push to `main`;
-Prometheus has 4 alert rules. The API also runs on a local minikube cluster from a Helm chart (section 6); it has been
-checked with 2 replicas so far, and the 3-replica run is still to come. Monitoring on Kubernetes and the cloud parts
-are planned. The diagrams are derived from the code and are updated whenever a part is added.
+Prometheus has 4 alert rules. The API also runs as 3 replicas on a local minikube cluster from a Helm chart
+(section 6, `make k8s-deploy`). A pipeline stage that deploys to the cluster, monitoring on Kubernetes and the cloud
+parts are planned. The diagrams are derived from the code and are updated whenever a part is added.
 
 Styling in every diagram:
 - **Solid** box or arrow: implemented.
@@ -48,7 +48,7 @@ flowchart LR
         jenkins["Jenkins 2.580.2 LTS in Compose<br/>JCasC + Job DSL, host Docker socket"]
         registry[("Image registry<br/>with the cloud deployment")]
         compose["Compose deploy of the local image<br/>milk10k-api:build-sha7, smoke + parity"]
-        mk["minikube, Helm chart k8s/milk10k-api<br/>3 replicas by default, checked with 2"]
+        mk["minikube, Helm chart k8s/milk10k-api<br/>3 replicas, make k8s-deploy"]
         kps["kube-prometheus-stack via Helm"]
         tf["Terraform"]
         gke["GKE, Helm chart, 3 replicas"]
@@ -118,7 +118,7 @@ flowchart LR
 | API image | implemented | [`serving/Dockerfile`](../serving/Dockerfile): pinned `python:3.12.16-slim-trixie` (tag + digest), pinned requirements then the package with its `api` extra, no torch, uid 10001, healthcheck on `/ready` with the Python standard library, uvicorn without `--workers` |
 | Docker Compose stack | implemented (api + 5 monitoring services) | [`compose.yaml`](../compose.yaml), `make up` / `make down`: images pinned by tag + digest, model mounted read-only, UIs on 127.0.0.1 only, internal network `monitoring` for scrapes and OTLP, every service `cap_drop: ALL` + `no-new-privileges` + a memory limit without swap + json-file log rotation (10 MB × 3), Prometheus starts with the API without waiting for its health, so an API that cannot load its model still shows up in monitoring (`milk10k_model_ready` 0); Grafana waits for a healthy Prometheus; checked with one command from a fresh clone |
 | Compose deploy by the pipeline | implemented | Deploy stage: `docker compose up -d --no-build --wait` with `API_IMAGE_TAG`, model from the CI copy (read-only), Grafana password from a Jenkins credential; then smoke test and HTTP parity against `http://api:8000`. No automatic rollback: a failed deploy is rolled back by hand ([ci/README.md](../ci/README.md)) |
-| minikube with a Helm chart, 3 replicas | implemented; checked with 2 replicas, the 3-replica run is still to come | [`k8s/`](../k8s/README.md): Helm chart `milk10k-api` (Deployment + ClusterIP Service, `replicaCount: 3`), local values, namespace; image loaded into the node with a pinned tag; model from the host folder, read-only, sha256-checked by an init container; section 6. A pipeline stage running `helm upgrade` is planned |
+| minikube with a Helm chart, 3 replicas | implemented; checked with 3 replicas | [`k8s/`](../k8s/README.md): Helm chart `milk10k-api` (Deployment + ClusterIP Service, `replicaCount: 3`), local values, namespace; image loaded into the node with a pinned tag; model from the host folder, read-only, sha256-checked by an init container; section 6. A pipeline stage running `helm upgrade` is planned |
 | kube-prometheus-stack via Helm | planned (bonus) | locally and on GKE |
 | Terraform, GKE, GCS copy of the package | planned (bonus) | torn down right after the demo to limit cost |
 
@@ -320,36 +320,35 @@ flowchart LR
     hostdir --> mnt
     mnt -->|"hostPath, read-only"| p1
     mnt -->|"hostPath, read-only"| p2
-    mnt -.->|"hostPath, read-only"| p3
+    mnt -->|"hostPath, read-only"| p3
     images --> p1
     images --> p2
-    images -.-> p3
+    images --> p3
     incl -->|"new connection each request,<br/>spread by kube-proxy"| svc
     svc --> p1
     svc --> p2
-    svc -.-> p3
+    svc --> p3
     pf -->|"one Pod per session"| p1
     kubelet -->|"probes"| p1
 
     classDef implemented fill:#e6f4ea,stroke:#1e7e34,stroke-width:2px,color:#111111
-    classDef planned fill:#ffffff,stroke:#666666,stroke-width:1px,stroke-dasharray:5 5,color:#111111
-    class dev,hostdir,pf,images,mnt,kubelet,incl,svc,p1,p2 implemented
-    class p3 planned
+    class dev,hostdir,pf,images,mnt,kubelet,incl,svc,p1,p2,p3 implemented
     style node fill:#f3faf5,stroke:#1e7e34,stroke-width:2px,color:#111111
     style ns fill:#f3faf5,stroke:#1e7e34,stroke-width:2px,color:#111111
 ```
 
-The chart's default is 3 replicas; Pod 3 is dashed because the runs so far used 2 (`--set replicaCount=2`) for lack
-of free memory on the laptop. How to run and check it: [k8s/README.md](../k8s/README.md).
+How to run and check it: [k8s/README.md](../k8s/README.md). Measured with 3 replicas:
 
 - **Pod start:** the init container checks every package file against `manifest.json`; then the API loads the 15
   ONNX sessions while `/ready` answers 503, and the startup probe keeps the Pod out of the Service until it is 200.
-  Measured: Ready 12.7 s after the install (sha256 check about 3 s, model load about 5 s).
-- **Traffic:** the Service spreads new connections over the Ready Pods (20 requests: 11 and 9 on 2 Pods).
+  3 Pods started together: 3/3 Ready in 10.6 s (sha256 check about 3 s, model load 3.3–3.4 s).
+- **Traffic:** the Service spreads new connections over the Ready Pods (30 requests: 11 / 7 / 12).
   `kubectl port-forward` is pinned to one Pod, so it is used only for the smoke and parity tests (parity 2.55e-04,
   tolerance 0.002).
 - **Rollout:** one Pod at a time (`maxSurge: 0`, `maxUnavailable: 1`), because a 4th Pod would not fit the memory
-  budget; each old Pod waits 5 s (`preStop` sleep) before it stops. Measured with 2 replicas: no failed request out
-  of 346 during a rollout, 196 out of 196 while a Pod was deleted and replaced (Ready again after 8.7 s).
+  budget. Terminating Pods are not counted, so an old Pod can briefly overlap with its replacement (4 Pods were seen).
+  Each old Pod waits 5 s (`preStop` sleep) before it stops, as a precaution; rollouts without it were not tested.
+  No failed request out of 373 during a rollout, 183 out of 183 while a Pod was deleted and replaced (Ready again
+  after 8.7 s).
 - **Resources and security:** see the design table in [k8s/README.md](../k8s/README.md#design-choices) and the
   measurements in [serving_measurements.md](serving_measurements.md).
