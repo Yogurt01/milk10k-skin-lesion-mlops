@@ -1,3 +1,3 @@
 # deploy/
 
-Deployment code: Helm chart for the API on Kubernetes (minikube locally, GKE in the cloud) and the Terraform configuration for GKE. Empty until milestone M9.
+Terraform configuration for the cloud deployment (planned). The Helm chart for the API is in [`k8s/`](../k8s/README.md).

@@ -79,7 +79,8 @@ Green and solid: running now. Dashed: planned (Kubernetes and cloud). The detail
 ├── scripts/              model download and check, smoke test, repository hygiene check
 ├── benchmarks/           the scripts behind the serving measurements
 ├── docs/                 architecture, install guide, serving measurements, full parity report
-├── deploy/               Helm chart and Terraform (planned)
+├── k8s/                  Helm chart for the API on a local Kubernetes cluster (minikube), with its guide
+├── deploy/               Terraform for the cloud (planned)
 ├── compose.yaml          the local stack: API + Prometheus, node-exporter, cAdvisor, Grafana, Jaeger
 ├── Jenkinsfile           the pipeline: test → build → deploy → smoke → parity
 ├── Makefile              every command of this README (`make help`)
