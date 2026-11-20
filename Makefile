@@ -7,6 +7,7 @@ NOTEBOOK_PY := notebooks/.venv/bin/python
 PYTEST_FAST := -m "not parity and not slow"
 COV_MIN ?= 90
 API_BASE_URL ?= http://127.0.0.1:8000
+PARITY_JUNIT ?= reports/junit-parity.xml
 # Jenkins (ci/compose.yaml, CI-D1..CI-D12): host folder for JENKINS_HOME and the CI model copy (same paths inside)
 CI_HOME ?= $(HOME)/milk10k-ci
 CI_MODEL_SRC ?= artifacts/model_package/final-P1a-kg-onnx
@@ -15,8 +16,11 @@ CI_COMPOSE = CI_HOME=$(CI_HOME) DOCKER_GID=$$(stat -c %g /var/run/docker.sock) d
 K8S_PROFILE ?= milk10k
 K8S_NAMESPACE ?= milk10k
 K8S_RELEASE ?= milk10k-api
+# The same deploy script as the Jenkins Kubernetes stage (load the image into the node, helm upgrade, rollout status)
+K8S_SCRIPT = KUBE_CONTEXT=$(K8S_PROFILE) K8S_NODE=$(K8S_PROFILE) K8S_NAMESPACE=$(K8S_NAMESPACE) \
+	K8S_RELEASE=$(K8S_RELEASE) REPLICAS=$(REPLICAS) scripts/k8s_deploy.sh
 
-.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-down k8s-deploy k8s-stop tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-kubeconfig ci-down k8s-deploy k8s-stop tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -42,7 +46,7 @@ test-report: ## Fast tests + JUnit XML and coverage XML in reports/ (fails below
 
 test-container: ## HTTP parity (the 6 sample lesions) against a running API at API_BASE_URL; never the 479-lesion run
 	env -u MILK10K_DATA_DIR API_BASE_URL=$(API_BASE_URL) $(SERVING_PY) -m pytest -m parity tests/test_http_parity.py \
-		--deselect tests/test_http_parity.py::test_all_479_reference_lesions_through_http --junit-xml=reports/junit-parity.xml
+		--deselect tests/test_http_parity.py::test_all_479_reference_lesions_through_http --junit-xml=$(PARITY_JUNIT)
 
 smoke: ## Smoke test (scripts/smoke_test.py) against a running API at API_BASE_URL
 	python3 scripts/smoke_test.py --base-url $(API_BASE_URL)
@@ -101,17 +105,17 @@ ci-up: ci-secrets ## Jenkins on 127.0.0.1:8081: folders under CI_HOME, hard-link
 	scripts/fetch_model.sh --check $(CI_HOME)/model/final-P1a-kg-onnx
 	$(CI_COMPOSE) up -d --build --wait
 
+ci-kubeconfig: ## Kubeconfig for Jenkins (ServiceAccount in one namespace, 30-day token) in ci/secrets/; then restart Jenkins
+	K8S_PROFILE=$(K8S_PROFILE) K8S_NAMESPACE=$(K8S_NAMESPACE) scripts/ci_kubeconfig.sh
+
 ci-down: ## Stop Jenkins (JENKINS_HOME with the uv cache, and the model copy, stay under CI_HOME)
 	$(CI_COMPOSE) down -v
 
 k8s-deploy: ## Deploy the API to the running minikube profile: make k8s-deploy TAG=<image tag> [REPLICAS=n]
 	@test -n "$(TAG)" || { echo "usage: make k8s-deploy TAG=<image tag> [REPLICAS=n] (a pinned tag, never latest)" >&2; exit 2; }
-	minikube -p $(K8S_PROFILE) image ls | grep -qxF "docker.io/library/milk10k-api:$(TAG)" \
-		|| minikube -p $(K8S_PROFILE) image load milk10k-api:$(TAG)
 	kubectl --context $(K8S_PROFILE) apply -f k8s/namespace.yaml
-	helm upgrade --install $(K8S_RELEASE) k8s/milk10k-api --kube-context $(K8S_PROFILE) -n $(K8S_NAMESPACE) \
-		-f k8s/values-local.yaml --set image.tag=$(TAG) $(if $(REPLICAS),--set replicaCount=$(REPLICAS))
-	kubectl --context $(K8S_PROFILE) -n $(K8S_NAMESPACE) rollout status deployment/$(K8S_RELEASE) --timeout=300s
+	$(K8S_SCRIPT) load $(TAG)
+	$(K8S_SCRIPT) deploy $(TAG)
 
 k8s-stop: ## Stop the minikube profile (frees its memory; cluster, loaded images and model mount stay for the next start)
 	minikube stop -p $(K8S_PROFILE)

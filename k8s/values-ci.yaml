@@ -1,0 +1,11 @@
+# Extra values for the deploy from Jenkins, used together with values-local.yaml. The pipeline runs next to the
+# Compose stack and Jenkins on one laptop, where 3 replicas do not fit, so it deploys 1 replica; the 3-replica setup is
+# the chart default and is run by hand (README.md in this folder).
+replicaCount: 1
+
+# With a single replica the default (maxSurge 0, maxUnavailable 1) would stop the only Pod before its replacement is
+# Ready. Here the new Pod starts first and the old one keeps serving until then; a new Pod that never becomes Ready
+# (a bad image tag) leaves the old one untouched until Helm rolls the release back.
+strategy:
+  maxSurge: 1
+  maxUnavailable: 0

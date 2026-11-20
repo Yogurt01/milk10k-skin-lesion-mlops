@@ -3,6 +3,7 @@
 - jenkins_admin_password: random (like `make env` does for Grafana), created once, never changed afterwards.
 - grafana_admin_password: copied from GRAFANA_ADMIN_PASSWORD in the repository's .env (the deploy stage needs the same
   value as the running stack; DCK-D8), rewritten only when it differs.
+- kubeconfig: an empty placeholder if missing (the real one comes from `make ci-kubeconfig`), never overwritten here.
 
 Files are mode 600 in a mode 700 folder (gitignored). Values are never printed.
 """
@@ -55,6 +56,14 @@ def main() -> int:
     else:
         write_private(grafana, value)
         print(f"ci-secrets: {grafana.relative_to(ROOT)} copied from .env (value not shown)")
+    kubeconfig = SECRETS / "kubeconfig"
+    if kubeconfig.is_file():
+        print(f"ci-secrets: {kubeconfig.relative_to(ROOT)} exists: not changed")
+    else:
+        # Compose needs the file to exist; with this empty config the Kubernetes stage reports the cluster as not
+        # reachable. `make ci-kubeconfig` writes the real one while the cluster runs.
+        write_private(kubeconfig, "apiVersion: v1\nkind: Config\nclusters: []\nusers: []\ncontexts: []\n")
+        print(f"ci-secrets: created an empty {kubeconfig.relative_to(ROOT)} (run make ci-kubeconfig for a real one)")
     return 0
 
 

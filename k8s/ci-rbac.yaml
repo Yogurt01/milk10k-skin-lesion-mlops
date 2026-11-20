@@ -1,0 +1,61 @@
+# Identity of the Jenkins pipeline on the local cluster: a ServiceAccount that can deploy the API chart in the
+# milk10k namespace and nothing else (no cluster-wide rights, no other namespace).
+# Applied once with the admin context; `make ci-kubeconfig` then writes a short-lived token for it into a gitignored
+# kubeconfig for Jenkins:
+#   kubectl --context milk10k apply -f k8s/namespace.yaml -f k8s/ci-rbac.yaml
+# Jenkins also has the host's Docker socket (see ci/README.md), so this limits what the pipeline's kubectl and Helm can
+# do; it is not a boundary against a hostile pipeline.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-deployer
+  namespace: milk10k
+  labels:
+    app.kubernetes.io/part-of: milk10k
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ci-deployer
+  namespace: milk10k
+  labels:
+    app.kubernetes.io/part-of: milk10k
+rules:
+  # The chart's objects (Deployment, Service); Helm applies them server-side (patch) and waits on them (watch).
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Helm keeps its release history in Secrets of the release namespace.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Rollout status, logs on failure, and the port-forward for the smoke and parity tests.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-deployer
+  namespace: milk10k
+  labels:
+    app.kubernetes.io/part-of: milk10k
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ci-deployer
+subjects:
+  - kind: ServiceAccount
+    name: ci-deployer
+    namespace: milk10k
