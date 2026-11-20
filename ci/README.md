@@ -102,10 +102,14 @@ from Jenkins do the same thing.
 | Tests | Smoke test and HTTP parity (tolerance 0.002, report `reports/junit-parity-k8s.xml`) through a port-forward to a ready Pod of the new image, on a port kubectl chooses | A port-forward to the Service may pick an old Pod that is still shutting down; a fixed port may be held by another process |
 | Clean-up | Remove `<build>-<sha7>` tags from the node beyond the newest 3, except tags used by a Pod or by the previous Helm revision; never a prune | A rollback must find its image; images in the node otherwise pile up (about 640 MB each) |
 
-**Checked (2026-11-20/21):** a green build on `main` with the stage (76.0 s in total; the Kubernetes stage about
-22 s); a deliberately wrong image tag: Helm rolled back, the build failed with "deploy of … FAILED; Helm rolled back
-to the previous release", and the running Pod answered all 434 requests sent during the drill; the cluster stopped:
-the build ended UNSTABLE with "the local cluster is not running, so this build was not deployed to it".
+**Checked (2026-11-20/21):** a green build on `main` started by polling, with the stage (81.6 s in total; the
+Kubernetes stage about 22 s; [screenshot](../docs/images/jenkins-k8s-stage.png)); a deliberately wrong image tag in a
+test job: Helm rolled back, the build failed with "deploy of … FAILED; Helm rolled back to the previous release"
+([screenshot](../docs/images/jenkins-k8s-bad-tag.png)), and the running Pod answered all 434 requests sent during the
+drill; the cluster stopped: the build ended UNSTABLE with "the local cluster is not running, so this build was not
+deployed to it". The stage deploys 1 replica ([screenshot](../docs/images/k8s-pods-ci.png): the deployment 1/1 on the
+polling build's tag `15-3834354`); the 3-replica deployment is the chart default, run and checked by hand
+([k8s/README.md](../k8s/README.md#what-was-checked)).
 
 **Limits:** the ServiceAccount narrows what the pipeline's kubectl and Helm can do, but Jenkins also holds the host's
 Docker socket (above), so this is not a boundary against a hostile pipeline. The token expires after 30 days.
