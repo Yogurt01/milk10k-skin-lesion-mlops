@@ -12,6 +12,8 @@ Kubernetes Service, on a local minikube cluster. Everything stays on your machin
 | [`milk10k-api/`](milk10k-api/) | Helm chart: Deployment (3 replicas by default) and a ClusterIP Service |
 | [`milk10k-api/values.yaml`](milk10k-api/values.yaml) | Defaults with the reasons for each number (threads, memory, probes, rollout) |
 | [`values-local.yaml`](values-local.yaml) | Settings for the local cluster (image loaded into the node, model from a host folder) |
+| [`values-ci.yaml`](values-ci.yaml) | Added by the Jenkins deploy: 1 replica, the new Pod starts before the old one stops |
+| [`ci-rbac.yaml`](ci-rbac.yaml) | ServiceAccount `ci-deployer` for Jenkins, with rights in this namespace only ([ci/README.md](../ci/README.md#the-kubernetes-stage)) |
 
 ## What you need
 
@@ -74,7 +76,9 @@ kubectl --context milk10k -n milk10k rollout status deployment/milk10k-api
 
 Add `--set replicaCount=2` (or 1) if the machine does not have the memory for 3.
 
-The same steps as one command (the image is loaded only if the node does not have it yet):
+The same as one command, with [`scripts/k8s_deploy.sh`](../scripts/k8s_deploy.sh), which the Jenkins pipeline uses
+too: the image is copied into the node only if it is not there yet (`docker save` into the node's containerd), and
+`helm upgrade --rollback-on-failure` returns to the previous release if the new one does not become ready in 5 min.
 
 ```bash
 make k8s-deploy TAG=$TAG                  # optional: REPLICAS=2

@@ -2,11 +2,11 @@
 
 > **Research model, not a medical device.** Its output is not a diagnosis and must not be used for clinical decisions.
 
-Status as of 2026-11-20: the API, its model package and the monitoring stack run with one command (`make up`); a
-local Jenkins, configured as code, runs the pipeline test → build → deploy → smoke → parity on every push to `main`;
-Prometheus has 4 alert rules. The API also runs as 3 replicas on a local minikube cluster from a Helm chart
-(section 6, `make k8s-deploy`). A pipeline stage that deploys to the cluster, monitoring on Kubernetes and the cloud
-parts are planned. The diagrams are derived from the code and are updated whenever a part is added.
+Status as of 2026-11-21: the API, its model package and the monitoring stack run with one command (`make up`); a
+local Jenkins, configured as code, runs the pipeline test → build → deploy → smoke → parity → Kubernetes on every
+push to `main`; Prometheus has 4 alert rules. The API also runs as 3 replicas on a local minikube cluster from a Helm
+chart (section 6, `make k8s-deploy`), and the pipeline deploys each build's image there (1 replica next to the Compose
+stack). Monitoring on Kubernetes and the cloud parts are planned. The diagrams are derived from the code and are updated whenever a part is added.
 
 Styling in every diagram:
 - **Solid** box or arrow: implemented.
@@ -80,7 +80,7 @@ flowchart LR
     jenkins -->|"docker build + compose up through the host socket"| compose
     jenkins -.->|"push, with the cloud deployment"| registry
     pkg -->|"hostPath read-only, sha256 check in an init container"| mk
-    jenkins -.->|"helm upgrade"| mk
+    jenkins -->|"image into the node + helm upgrade, 1 replica"| mk
     registry -.-> gke
     mk -.- kps
     tf -.-> gke
@@ -118,7 +118,7 @@ flowchart LR
 | API image | implemented | [`serving/Dockerfile`](../serving/Dockerfile): pinned `python:3.12.16-slim-trixie` (tag + digest), pinned requirements then the package with its `api` extra, no torch, uid 10001, healthcheck on `/ready` with the Python standard library, uvicorn without `--workers` |
 | Docker Compose stack | implemented (api + 5 monitoring services) | [`compose.yaml`](../compose.yaml), `make up` / `make down`: images pinned by tag + digest, model mounted read-only, UIs on 127.0.0.1 only, internal network `monitoring` for scrapes and OTLP, every service `cap_drop: ALL` + `no-new-privileges` + a memory limit without swap + json-file log rotation (10 MB × 3), Prometheus starts with the API without waiting for its health, so an API that cannot load its model still shows up in monitoring (`milk10k_model_ready` 0); Grafana waits for a healthy Prometheus; checked with one command from a fresh clone |
 | Compose deploy by the pipeline | implemented | Deploy stage: `docker compose up -d --no-build --wait` with `API_IMAGE_TAG`, model from the CI copy (read-only), Grafana password from a Jenkins credential; then smoke test and HTTP parity against `http://api:8000`. No automatic rollback: a failed deploy is rolled back by hand ([ci/README.md](../ci/README.md)) |
-| minikube with a Helm chart, 3 replicas | implemented; checked with 3 replicas | [`k8s/`](../k8s/README.md): Helm chart `milk10k-api` (Deployment + ClusterIP Service, `replicaCount: 3`), local values, namespace; image loaded into the node with a pinned tag; model from the host folder, read-only, sha256-checked by an init container; section 6. A pipeline stage running `helm upgrade` is planned |
+| minikube with a Helm chart, 3 replicas | implemented; checked with 3 replicas | [`k8s/`](../k8s/README.md): Helm chart `milk10k-api` (Deployment + ClusterIP Service, `replicaCount: 3`), local values, namespace; image loaded into the node with a pinned tag; model from the host folder, read-only, sha256-checked by an init container; section 6. The pipeline's Kubernetes stage deploys each build with [`scripts/k8s_deploy.sh`](../scripts/k8s_deploy.sh) (1 replica, rollback on failure; [ci/README.md](../ci/README.md#the-kubernetes-stage)) |
 | kube-prometheus-stack via Helm | planned (bonus) | locally and on GKE |
 | Terraform, GKE, GCS copy of the package | planned (bonus) | torn down right after the demo to limit cost |
 
@@ -227,9 +227,9 @@ flowchart LR
     build --> deploy["Deploy: fetch_model.sh --check, compose up --wait<br/>attach to milk10k_default, wait for /ready"]
     deploy --> smoke["Smoke: make smoke"]
     smoke --> parity["Parity: make sample from the read-only dataset<br/>make test-container, 6 lesions, tolerance 0.002"]
-    parity --> post["post always: detach network, delete sample images<br/>keep 3 newest image tags, archive reports"]
+    parity --> k8s["Kubernetes: namespaced ServiceAccount, attach to the cluster network<br/>image into the minikube node, helm upgrade --rollback-on-failure, 1 replica<br/>smoke + parity on the new Pod; UNSTABLE if the cluster is stopped"]
+    k8s --> post["post always: detach networks, delete sample images<br/>keep 3 newest image tags, archive reports"]
     build -.-> pushimg["Bonus: push to a registry"]
-    pushimg -.-> helm["Bonus: helm upgrade on minikube"]
     pushimg -.-> approve{"Bonus: approval step"}
     approve -.-> gkedeploy["Deploy to GKE"]
     tfapply["Terraform apply: GKE, registry, bucket"] -.-> gkedeploy
@@ -237,14 +237,14 @@ flowchart LR
 
     classDef implemented fill:#e6f4ea,stroke:#1e7e34,stroke-width:2px,color:#111111
     classDef planned fill:#ffffff,stroke:#666666,stroke-width:1px,stroke-dasharray:5 5,color:#111111
-    class push,poll,setup,tests,lint,hyg,build,deploy,smoke,parity,post implemented
-    class pushimg,helm,approve,gkedeploy,tfapply,teardown planned
+    class push,poll,setup,tests,lint,hyg,build,deploy,smoke,parity,k8s,post implemented
+    class pushimg,approve,gkedeploy,tfapply,teardown planned
 ```
 
 Unit tests, lint and hygiene run as parallel stages; any failure skips every later stage, and the `post`
 block still detaches the network and deletes the sample images. Each stage has its own timeout; one executor, no
-concurrent builds. The required path ends with parity against the deployed image; the minikube and GKE branches are
-bonus items. Measured serving cost, which sizes the replicas and limits, is in
+concurrent builds. The required path ends with parity against the deployed image; the Kubernetes stage (local
+cluster, no registry: the image is copied into the node) and the GKE branch are bonus items. Measured serving cost, which sizes the replicas and limits, is in
 [serving_measurements.md](serving_measurements.md).
 
 ## 4. CI network and Docker access
@@ -286,7 +286,13 @@ network cleanly.
 | Failed deploy | Manual rollback (documented limitation) | Keeps the pipeline simple; the newest 3 image tags stay available |
 | Resources | 2 GiB without extra swap, `-Xmx768m`, 1 executor, started on demand | Measured peak about 1.3 GiB; a 16 GB laptop also runs the stack |
 | Tests | Inside the Jenkins container with uv and the Makefile; uv cache under JENKINS_HOME | The same commands as on a developer machine; dependencies downloaded once |
-| Jenkins image | 2.580.2 LTS on JDK 21 by digest; no kubectl or Helm yet | Current LTS; cluster tools come with the Kubernetes part |
+| Jenkins image | 2.580.2 LTS on JDK 21 by digest; kubectl v1.37.2 and Helm v4.3.2 with pinned sha256 | Current LTS; kubectl within one minor version of the cluster, Helm as on the host |
+| Cluster credentials | ServiceAccount with a Role in namespace `milk10k` only; 30-day token in a gitignored kubeconfig, loaded as a Jenkins file credential, bound only in the Kubernetes stage | Least privilege for the pipeline's kubectl and Helm, and the same shape a cloud cluster needs; the Docker socket still makes Jenkins root-equivalent on the host |
+| Cluster network | Attach to the cluster's Docker network during the stage, detach in `post` | Works whether or not the cluster exists; Docker isolates the networks otherwise |
+| Image into the cluster | `docker save` piped into containerd in the node (`ctr images import`) | No registry and no minikube files inside Jenkins; becomes a `docker push` with a registry |
+| Replicas in CI | 1 replica, `maxSurge: 1`, `maxUnavailable: 0` | 3 replicas do not fit next to the Compose stack and Jenkins on 16 GB; the old Pod serves until the new one is ready |
+| Failed Kubernetes deploy | `helm upgrade --rollback-on-failure`, 5 min | The last good release keeps serving (checked with a wrong image tag) |
+| Cluster not running | Stage and build UNSTABLE with a message | Not red for a stopped laptop cluster, never silently green |
 | Configuration | JCasC + Job DSL, setup wizard off, plugins pinned | Jenkins is recreated from the repository alone |
 | Secrets | Gitignored `ci/secrets/` files as Compose secrets, loaded by JCasC | No credentials in git or in the image |
 | Network | Attach to the stack network at deploy, detach in `post { always }` | Jenkins can start before the stack exists, and `make down` removes the network cleanly |
@@ -298,7 +304,7 @@ network cleanly.
 
 ```mermaid
 flowchart LR
-    dev(["Developer machine<br/>docker build, minikube image load,<br/>helm upgrade --install"])
+    dev(["Developer machine or the Jenkins Kubernetes stage<br/>scripts/k8s_deploy.sh: image into the node,<br/>helm upgrade --install"])
     hostdir[("Model package folder on the host<br/>15 ONNX files + manifest.json")]
     pf(["kubectl port-forward<br/>smoke test, HTTP parity"])
 
