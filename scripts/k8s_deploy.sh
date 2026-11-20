@@ -94,10 +94,12 @@ for p in json.load(sys.stdin)["items"]:
     echo "k8s: testing Pod $pod ($REPO:$tag)"
     mkdir -p reports
     kc port-forward "pod/$pod" "$LOCAL_PORT:8000" > reports/k8s-port-forward.log 2>&1 &
-    local pf=$!
-    trap 'kill $pf 2>/dev/null || true' EXIT
+    # Not `local`: the EXIT trap runs after this function has returned (with `set -u` a local would be unbound).
+    PF_PID=$!
+    trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
     local base="http://127.0.0.1:$LOCAL_PORT"
-    timeout 30 sh -c "until curl -fsS -o /dev/null '$base/ready'; do sleep 1; done"
+    timeout 30 sh -c "until curl -fs -o /dev/null '$base/ready'; do sleep 1; done" \
+        || { echo "k8s: no answer through the port-forward:" >&2; cat reports/k8s-port-forward.log >&2; exit 1; }
     make smoke API_BASE_URL="$base" 2>&1 | tee reports/smoke-k8s.log
     REQUIRE_MODEL_PACKAGE=1 PYTEST_ADDOPTS=-rP make test-container API_BASE_URL="$base" PARITY_JUNIT="$PARITY_JUNIT"
 }
