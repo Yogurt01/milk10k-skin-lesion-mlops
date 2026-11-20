@@ -185,4 +185,8 @@ On the 16 GB reference laptop (minikube v1.39.0, Kubernetes v1.37.0), with 3 rep
 | Upload above 1 MB (spooled to `/tmp`) | 200 with the read-only root filesystem |
 | Memory | about 1.9 GiB per Pod (no swap, no OOM kill); node 6.3 GiB |
 
+Screenshots of a later deployment of the same release: [Pods 3/3](../docs/images/k8s-pods.png),
+[sha256 check of each Pod](../docs/images/k8s-verify-model.png), [20 requests spread over the 3 Pods](../docs/images/k8s-spread.png),
+[probes, requests and limits](../docs/images/k8s-describe.png), [Helm release](../docs/images/helm-list.png).
+
 Measured serving cost (memory, latency, threads): [docs/serving_measurements.md](../docs/serving_measurements.md).
