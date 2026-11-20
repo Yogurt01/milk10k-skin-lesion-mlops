@@ -1,0 +1,87 @@
+# Default values for the MILK10k API chart. Environment-specific values (local cluster, cloud) go in a separate
+# file passed with -f, e.g. k8s/values-local.yaml. Research model, not a medical device.
+
+replicaCount: 3
+
+image:
+  repository: milk10k-api
+  # Required, and never "latest": a pinned tag makes every rollout explicit and repeatable.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Where the model package (~1.4 GB, CC BY-NC 4.0, non-commercial) comes from. It is never part of the image.
+# hostPath: a folder that already exists on the node (local clusters). Other sources are not implemented yet.
+model:
+  source: hostPath
+  hostPath: /mnt/milk10k-model/final-P1a-kg-onnx
+  mountPath: /models/final-P1a-kg-onnx
+  # An init container checks every file against the sha256 in manifest.json and logs the result before the API
+  # starts; a mismatch keeps the Pod in Init:Error and it never receives traffic.
+  verifyInInitContainer: true
+
+# API settings (environment variables read by the server). With 3 replicas on one 16-thread machine:
+# 4 ONNX Runtime threads x 1 running prediction per Pod = 12 inference threads in total. Measured on the reference
+# laptop: a second concurrent prediction added only ~6% throughput (1.81 vs 1.71 req/s) and raised peak memory.
+env:
+  ORT_INTRA_OP_THREADS: "4"
+  MAX_CONCURRENT_PREDICTIONS: "1"
+  MAX_QUEUED_PREDICTIONS: "8"
+  LOG_LEVEL: INFO
+
+# Measured peak memory of one API container: 2,113 MiB (2 concurrent predictions); limit = request, with headroom
+# for queued uploads. CPU limit 4 matches the 4 inference threads.
+resources:
+  requests:
+    cpu: "3"
+    memory: 2560Mi
+  limits:
+    cpu: "4"
+    memory: 2560Mi
+
+initResources:
+  requests:
+    cpu: 500m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# Replace one Pod at a time and never run an extra Pod: a fourth 2.5 GiB Pod does not fit the local memory budget.
+# During a rollout, replicaCount - 1 Pods keep serving.
+strategy:
+  maxSurge: 0
+  maxUnavailable: 1
+
+probes:
+  # Model load (sha256 of 1.4 GB + 15 ONNX sessions) took ~3 s alone; allow up to 180 s on a busy node.
+  # Liveness and readiness start only after this probe has succeeded.
+  startup:
+    path: /ready
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 90
+  # /ready is 200 only while the model is loaded; overload (queue full) does not flip it.
+  readiness:
+    path: /ready
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+  # /health is async and does no work; measured at a few milliseconds even with the prediction queue full.
+  # Generous timeout and threshold: a busy Pod must never be restarted; a real hang is still caught in ~60 s.
+  liveness:
+    path: /health
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+# Kept alive for a few seconds after it is marked for deletion, so the Service stops sending new connections
+# before the server stops accepting them (endpoint removal is asynchronous).
+preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
+
+# Scratch space for uploads larger than the in-memory buffer; the root filesystem is read-only.
+tmpSizeLimit: 256Mi
+
+service:
+  type: ClusterIP
+  port: 8000

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: milk10k-api
+description: >-
+  MILK10k skin-lesion classifier API (15-member ONNX ensemble, CPU). Research model, not a medical device.
+  Model weights: CC BY-NC 4.0, MILK study team, non-commercial use only; they are not part of this chart or the image.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

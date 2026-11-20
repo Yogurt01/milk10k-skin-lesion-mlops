@@ -1,0 +1,8 @@
+MILK10k API: {{ .Values.replicaCount }} replica(s) of {{ include "milk10k-api.image" . }} in namespace {{ .Release.Namespace }}.
+Research model, not a medical device. Model weights: CC BY-NC 4.0, MILK study team, non-commercial use only.
+
+Inside the cluster: http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+From this machine:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} port-forward service/{{ .Release.Name }} 8000:{{ .Values.service.port }}
+  curl http://127.0.0.1:8000/ready

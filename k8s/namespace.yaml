@@ -1,0 +1,13 @@
+# Namespace for the MILK10k API on a local cluster. Apply it before installing the chart:
+#   kubectl --context milk10k apply -f k8s/namespace.yaml
+# Pod Security: the local install mounts the model with a hostPath volume, which the Baseline and Restricted
+# Pod Security Standards forbid, so this namespace cannot enforce them. "warn" makes the API server print what
+# Restricted would reject, so the gap stays visible.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: milk10k
+  labels:
+    app.kubernetes.io/part-of: milk10k
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest

@@ -1,0 +1,125 @@
+{{- if ne .Values.model.source "hostPath" }}
+{{- fail (printf "model.source %q is not implemented; use hostPath" .Values.model.source) }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "milk10k-api.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "milk10k-api.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.strategy.maxSurge }}
+      maxUnavailable: {{ .Values.strategy.maxUnavailable }}
+  template:
+    metadata:
+      labels:
+        {{- include "milk10k-api.labels" . | nindent 8 }}
+    spec:
+      # The API never talks to the Kubernetes API.
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if .Values.model.verifyInInitContainer }}
+      initContainers:
+        - name: verify-model
+          image: {{ include "milk10k-api.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - python
+            - -c
+            - |
+              import os, sys
+              from pathlib import Path
+              from milk10k_serving.package import ModelPackageError, verify_package
+              try:
+                  manifest = verify_package(Path(os.environ["MODEL_DIR"]), verify_sha256=True)
+              except ModelPackageError as exc:
+                  print(f"sha256 check FAILED: {exc}", flush=True)
+                  sys.exit(1)
+              print(f"sha256 check passed: {len(manifest['files'])} files match manifest.json", flush=True)
+          env:
+            - name: MODEL_DIR
+              value: {{ .Values.model.mountPath | quote }}
+            - name: ORT_DISABLE_TELEMETRY
+              value: "1"
+          securityContext:
+            {{- include "milk10k-api.securityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.initResources | nindent 12 }}
+          volumeMounts:
+            - name: model
+              mountPath: {{ .Values.model.mountPath }}
+              readOnly: true
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "milk10k-api.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: MODEL_DIR
+              value: {{ .Values.model.mountPath | quote }}
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          securityContext:
+            {{- include "milk10k-api.securityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
+          volumeMounts:
+            - name: model
+              mountPath: {{ .Values.model.mountPath }}
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: model
+          hostPath:
+            path: {{ .Values.model.hostPath }}
+            type: Directory
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmpSizeLimit }}

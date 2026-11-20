@@ -1,0 +1,9 @@
+# Values for the local minikube cluster (profile "milk10k"). The image is loaded into the node with
+# `minikube -p milk10k image load`, so it is never pulled from a registry.
+# The model folder is mounted into the node at start (minikube start --mount-string ...:/mnt/milk10k-model).
+image:
+  pullPolicy: Never
+
+model:
+  source: hostPath
+  hostPath: /mnt/milk10k-model/final-P1a-kg-onnx
