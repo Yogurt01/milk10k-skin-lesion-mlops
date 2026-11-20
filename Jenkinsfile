@@ -1,7 +1,9 @@
-// MILK10k pipeline: test → build → deploy → smoke → parity (P1-CI-03..08, P1-CI-10). Research model, not a medical
+// MILK10k pipeline: test → build → deploy → smoke → parity → kubernetes (P1-CI-03..08, P1-CI-10). Research model, not a medical
 // device. Runs on the Jenkins controller (ci/README.md). Trigger: pollSCM H/5 on main, set in the job definition
 // (ci/jenkins/jobs.groovy, P1-DEC-15). Docker commands go to the host daemon and touch milk10k resources only.
 // A failed deploy is not rolled back automatically (CI-D7): see ci/README.md for the manual rollback.
+// Then the same image goes to the local Kubernetes cluster with Helm (stage Kubernetes, scripts/k8s_deploy.sh): rolled
+// back by Helm if it fails; skipped as UNSTABLE when the cluster is not running.
 pipeline {
     agent any
 
@@ -127,6 +129,49 @@ pipeline {
                 always { junit testResults: 'reports/junit-parity.xml' }
             }
         }
+
+        stage('Kubernetes') {
+            options { timeout(time: 15, unit: 'MINUTES') }
+            environment {
+                // 1 replica with a surge rollout next to the Compose stack (k8s/values-ci.yaml); the cluster's own
+                // network, joined only for this stage.
+                K8S_VALUES = 'k8s/values-ci.yaml'
+                K8S_NETWORK = 'milk10k'
+            }
+            steps {
+                // Kubeconfig of the ci-deployer ServiceAccount (one namespace), only inside this block.
+                withCredentials([file(credentialsId: 'milk10k-kubeconfig', variable: 'KUBECONFIG')]) {
+                    script {
+                        sh '''
+                            self=$(cat /etc/hostname)
+                            if ! docker network inspect "$K8S_NETWORK" >/dev/null 2>&1; then
+                                echo "no Docker network $K8S_NETWORK (cluster not created)"
+                            elif docker inspect "$self" --format '{{json .NetworkSettings.Networks}}' | grep -q "\\"$K8S_NETWORK\\""; then
+                                echo "already attached to $K8S_NETWORK"
+                            else
+                                docker network connect "$K8S_NETWORK" "$self" && echo "attached to $K8S_NETWORK"
+                            fi
+                        '''
+                        // A stopped cluster is not a failed deploy: the build turns UNSTABLE, never silently green.
+                        def reachable = sh(returnStatus: true, script: 'scripts/k8s_deploy.sh check')
+                        if (reachable == 3) {
+                            unstable('Kubernetes: the local cluster is not running, so this build was not deployed to it')
+                        } else if (reachable != 0) {
+                            error("Kubernetes: cluster check failed (exit ${reachable})")
+                        } else {
+                            sh 'scripts/k8s_deploy.sh load "$API_IMAGE_TAG"'
+                            // Rolls back to the previous release if the new one does not become ready (red build).
+                            sh 'scripts/k8s_deploy.sh deploy "$API_IMAGE_TAG"'
+                            sh 'scripts/k8s_deploy.sh test "$API_IMAGE_TAG"'
+                            sh 'scripts/k8s_deploy.sh cleanup'
+                        }
+                    }
+                }
+            }
+            post {
+                always { junit allowEmptyResults: true, testResults: 'reports/junit-parity-k8s.xml' }
+            }
+        }
     }
 
     post {
@@ -137,6 +182,9 @@ pipeline {
                     docker network disconnect "$STACK_NETWORK" "$self" && echo "detached from $STACK_NETWORK"
                 else
                     echo "not attached to $STACK_NETWORK"
+                fi
+                if docker inspect "$self" --format '{{json .NetworkSettings.Networks}}' | grep -q '"milk10k"'; then
+                    docker network disconnect milk10k "$self" && echo "detached from milk10k"
                 fi
                 api=$(docker ps -q --filter label="$STACK_LABEL" --filter label=com.docker.compose.service=api)
                 if [ -n "$api" ]; then docker logs --tail 300 "$api" > reports/api.log 2>&1 || true; fi
