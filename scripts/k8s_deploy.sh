@@ -10,8 +10,7 @@
 #
 # Settings (environment): KUBE_CONTEXT (empty = the kubeconfig's current context, as in Jenkins), K8S_NODE (node
 # container, default milk10k), K8S_NAMESPACE, K8S_RELEASE, K8S_VALUES (extra values files, space-separated),
-# REPLICAS (optional override), K8S_TIMEOUT (Helm wait before rollback, default 5m0s), K8S_LOCAL_PORT (port-forward,
-# default 18000), K8S_PARITY_JUNIT.
+# REPLICAS (optional override), K8S_TIMEOUT (Helm wait before rollback, default 5m0s), K8S_PARITY_JUNIT.
 # Only milk10k resources are touched; images are removed one by one, never pruned. Research model, not a medical device.
 set -euo pipefail
 
@@ -22,7 +21,6 @@ NAMESPACE="${K8S_NAMESPACE:-milk10k}"
 RELEASE="${K8S_RELEASE:-milk10k-api}"
 CHART="k8s/milk10k-api"
 VALUES="k8s/values-local.yaml ${K8S_VALUES:-}"
-LOCAL_PORT="${K8S_LOCAL_PORT:-18000}"
 PARITY_JUNIT="${K8S_PARITY_JUNIT:-reports/junit-parity-k8s.xml}"
 REPO="milk10k-api"
 NODE_REF="docker.io/library/$REPO"     # how containerd names an imported milk10k-api:TAG
@@ -93,13 +91,26 @@ for p in json.load(sys.stdin)["items"]:
     [ -n "$pod" ] || { echo "k8s: no ready Pod runs $REPO:$tag" >&2; exit 1; }
     echo "k8s: testing Pod $pod ($REPO:$tag)"
     mkdir -p reports
-    kc port-forward "pod/$pod" "$LOCAL_PORT:8000" > reports/k8s-port-forward.log 2>&1 &
+    # A free local port chosen by kubectl (":8000"), read back from this port-forward's own output: a fixed port could
+    # be held by another process, and the tests would then talk to whatever listens there.
+    local log=reports/k8s-port-forward.log port="" i
+    # kubectl itself in the background, not the kc function: a backgrounded function runs in a subshell, $! would be
+    # that subshell, and killing it would leave kubectl running (seen: a leftover port-forward held the next build's port).
+    kubectl ${KUBE_CONTEXT:+--context "$KUBE_CONTEXT"} -n "$NAMESPACE" port-forward "pod/$pod" ":8000" > "$log" 2>&1 &
     # Not `local`: the EXIT trap runs after this function has returned (with `set -u` a local would be unbound).
     PF_PID=$!
     trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
-    local base="http://127.0.0.1:$LOCAL_PORT"
+    for i in $(seq 1 30); do
+        port="$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9][0-9]*\) -> 8000$/\1/p' "$log" | head -1)"
+        [ -n "$port" ] && break
+        kill -0 "$PF_PID" 2>/dev/null || break
+        sleep 1
+    done
+    [ -n "$port" ] || { echo "k8s: the port-forward did not start:" >&2; cat "$log" >&2; exit 1; }
+    local base="http://127.0.0.1:$port"
+    echo "k8s: port-forward $base -> $pod:8000"
     timeout 30 sh -c "until curl -fs -o /dev/null '$base/ready'; do sleep 1; done" \
-        || { echo "k8s: no answer through the port-forward:" >&2; cat reports/k8s-port-forward.log >&2; exit 1; }
+        || { echo "k8s: no answer through the port-forward:" >&2; cat "$log" >&2; exit 1; }
     make smoke API_BASE_URL="$base" 2>&1 | tee reports/smoke-k8s.log
     REQUIRE_MODEL_PACKAGE=1 PYTEST_ADDOPTS=-rP make test-container API_BASE_URL="$base" PARITY_JUNIT="$PARITY_JUNIT"
 }
