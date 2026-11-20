@@ -97,7 +97,7 @@ Python version does not matter (Ubuntu 26.04 ships 3.14).
 curl -LsSf https://astral.sh/uv/0.12.5/install.sh | sh
 ```
 
-Open a new terminal (the installer adds `~/.local/bin` to `PATH`), then:
+Open a new terminal, or run `source $HOME/.local/bin/env` (the installer adds `~/.local/bin` to `PATH`), then:
 
 ```bash
 uv --version              # uv 0.12.5
@@ -112,8 +112,9 @@ On the reference machine, 2026-11-19, as the normal user:
   `uv python install 3.12`, `uv python find 3.12`), `gpg --show-keys` on a downloaded copy of Docker's key (fingerprint
   as shown), the `Suites:` and `Architectures:` expressions (`resolute`, `amd64`), and the uv installer into a
   temporary folder.
-- Not re-run: the `sudo` commands, because everything was already installed on that machine. They are run in full in
-  the fresh-account check of this guide.
+- Not re-run: the `sudo` commands of steps 1 and 2, because the machine already had everything installed.
+- In a new user account on the same machine: the docker group, step 3 and the README from `git clone` to a healthy
+  `make up`.
 
 ## 4. Next
 
