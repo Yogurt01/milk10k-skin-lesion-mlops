@@ -34,6 +34,14 @@ credentials:
               id: grafana-admin-password
               description: "Grafana admin password (from .env via make ci-secrets)"
               secret: "${grafana_admin_password}"
+          # Kubeconfig for the Kubernetes stage: ServiceAccount ci-deployer, rights in namespace milk10k only.
+          # Read at start from the Compose secret (make ci-kubeconfig); bound to a file only inside that stage.
+          - file:
+              scope: GLOBAL
+              id: milk10k-kubeconfig
+              description: "Kubeconfig of the ci-deployer ServiceAccount (make ci-kubeconfig)"
+              fileName: kubeconfig
+              secretBytes: "${readFileBase64:/run/secrets/kubeconfig}"
 
 jobs:
   - file: /usr/share/jenkins/casc/jobs.groovy

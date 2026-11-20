@@ -1,4 +1,5 @@
 # Jenkins controller for the MILK10k pipeline (P1-CI-01; decisions CI-D1, CI-D9..CI-D11). See ci/README.md.
+# Also kubectl and Helm for the deploy to the local Kubernetes cluster.
 # Base: current Jenkins LTS on JDK 21, pinned by tag and digest (checked 2026-11-19: 2.580.2, Java 21 supported).
 FROM jenkins/jenkins:2.580.2-lts-jdk21@sha256:74401de6a6f92e1afe1b02d1c8e3d0c33f263bfb5275dd8813f9150355f2367b
 
@@ -29,6 +30,23 @@ RUN set -eux; \
       "docker-buildx-plugin=${BUILDX_PLUGIN_VERSION}"; \
     apt-get purge -y --auto-remove gnupg; \
     rm -rf /var/lib/apt/lists/*
+
+# kubectl and Helm for the Kubernetes stage (static binaries; version and published sha256 pinned, checked here).
+# kubectl: latest patch of the cluster's minor version (cluster v1.37.0). Helm: the same version as on the host.
+ARG KUBECTL_VERSION=v1.37.2
+ARG KUBECTL_SHA256=c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+ARG HELM_VERSION=v4.3.2
+ARG HELM_SHA256=d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
+RUN set -eux; \
+    tmp="$(mktemp -d)"; \
+    curl -fsSLo "$tmp/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
+    echo "${KUBECTL_SHA256}  $tmp/kubectl" | sha256sum -c -; \
+    install -m 0755 "$tmp/kubectl" /usr/local/bin/kubectl; \
+    curl -fsSLo "$tmp/helm.tar.gz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"; \
+    echo "${HELM_SHA256}  $tmp/helm.tar.gz" | sha256sum -c -; \
+    tar -xzf "$tmp/helm.tar.gz" -C "$tmp" linux-amd64/helm; \
+    install -m 0755 "$tmp/linux-amd64/helm" /usr/local/bin/helm; \
+    rm -rf "$tmp"
 
 USER jenkins
 # Plugins at exact versions, dependencies included (ci/jenkins/plugins.txt); --latest false keeps them as listed.

@@ -16,6 +16,10 @@ secrets:
     file: ./secrets/jenkins_admin_password
   grafana_admin_password:
     file: ./secrets/grafana_admin_password
+  # Kubeconfig of the ci-deployer ServiceAccount (one namespace of the local cluster), from `make ci-kubeconfig`;
+  # an empty placeholder until then (`make ci-secrets`).
+  kubeconfig:
+    file: ./secrets/kubeconfig
 
 services:
   jenkins:
@@ -50,6 +54,7 @@ services:
     secrets:
       - jenkins_admin_password
       - grafana_admin_password
+      - kubeconfig
     volumes:
       - type: bind
         source: /var/run/docker.sock
