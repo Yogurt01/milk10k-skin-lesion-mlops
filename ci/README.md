@@ -93,7 +93,7 @@ from Jenkins do the same thing.
 
 | Step | How | Why |
 |---|---|---|
-| Credentials | The kubeconfig credential is bound to a file only inside the stage (`withCredentials`) | The ServiceAccount may deploy the chart in namespace `milk10k` and nothing else: no other namespace, no nodes, no namespaces, no pod creation or exec (checked with `kubectl auth can-i`) |
+| Credentials | The kubeconfig credential is bound to a file only inside the stage (`withCredentials`) | The ServiceAccount may deploy the chart in namespace `milk10k` and nothing else: no other namespace, no nodes, no namespaces, no pod creation or exec (checked with `kubectl auth can-i`). It may also manage the chart's ServiceMonitor there, so a Jenkins deploy keeps the API scraped when Prometheus runs on the cluster ([k8s/README.md](../k8s/README.md#4-monitoring-prometheus-and-grafana)) |
 | Network | Attach to the Docker network `milk10k` (the cluster's), detach in `post` | Docker isolates the two networks; without the attach the API server is unreachable |
 | Cluster check | `GET /readyz`, 5 s timeout; not reachable → `unstable(...)` | A laptop without RAM for the cluster should not turn every build red, and a build must never look deployed when it was not |
 | Image | `docker save --platform linux/amd64` piped into `ctr -n k8s.io images import` in the node container (skipped if present) | No registry: only the Docker CLI and socket Jenkins already has. With a registry this step becomes `docker push` plus `image.repository` and `pullPolicy: IfNotPresent` |

@@ -2,11 +2,12 @@
 
 > **Research model, not a medical device.** Its output is not a diagnosis and must not be used for clinical decisions.
 
-Status as of 2026-11-21: the API, its model package and the monitoring stack run with one command (`make up`); a
+Status as of 2026-11-25: the API, its model package and the monitoring stack run with one command (`make up`); a
 local Jenkins, configured as code, runs the pipeline test → build → deploy → smoke → parity → Kubernetes on every
 push to `main`; Prometheus has 4 alert rules. The API also runs as 3 replicas on a local minikube cluster from a Helm
 chart (section 6, `make k8s-deploy`), and the pipeline deploys each build's image there (1 replica next to the Compose
-stack). Monitoring on Kubernetes and the cloud parts are planned. The diagrams are derived from the code and are updated whenever a part is added.
+stack). Prometheus and Grafana run on that cluster from a pinned Helm chart (kube-prometheus-stack) and scrape each
+API Pod; checked so far with 1 API replica. The cloud parts are planned. The diagrams are derived from the code and are updated whenever a part is added.
 
 Styling in every diagram:
 - **Solid** box or arrow: implemented.
@@ -49,7 +50,7 @@ flowchart LR
         registry[("Image registry<br/>with the cloud deployment")]
         compose["Compose deploy of the local image<br/>milk10k-api:build-sha7, smoke + parity"]
         mk["minikube, Helm chart k8s/milk10k-api<br/>3 replicas, make k8s-deploy"]
-        kps["kube-prometheus-stack via Helm"]
+        kps["kube-prometheus-stack 93.10 via Helm<br/>Prometheus + Grafana, namespace monitoring<br/>make k8s-monitoring"]
         tf["Terraform"]
         gke["GKE, Helm chart, 3 replicas"]
         gcs[("GCS copy of the model package")]
@@ -82,7 +83,7 @@ flowchart LR
     pkg -->|"hostPath read-only, sha256 check in an init container"| mk
     jenkins -->|"image into the node + helm upgrade, 1 replica"| mk
     registry -.-> gke
-    mk -.- kps
+    kps -->|"ServiceMonitor: scrape each API Pod every 15 s"| mk
     tf -.-> gke
     tf -.-> gcs
     release -.->|copy| gcs
@@ -92,10 +93,10 @@ flowchart LR
     classDef implemented fill:#e6f4ea,stroke:#1e7e34,stroke-width:2px,color:#111111
     classDef planned fill:#ffffff,stroke:#666666,stroke-width:1px,stroke-dasharray:5 5,color:#111111
     classDef ext fill:#fff4e5,stroke:#b35c00,stroke-width:1px,stroke-dasharray:2 4,color:#111111
-    class api,pred,ort,pkg,release,repo,metrics,tracing,prom,graf,nodeexp,cadv,jaeger,host,jenkins,compose,mk implemented
+    class api,pred,ort,pkg,release,repo,metrics,tracing,prom,graf,nodeexp,cadv,jaeger,host,jenkins,compose,mk,kps implemented
     style container fill:#f3faf5,stroke:#1e7e34,stroke-width:2px,color:#111111
     style obs fill:#f3faf5,stroke:#1e7e34,stroke-width:2px,color:#111111
-    class registry,kps,tf,gke,gcs,kpsg planned
+    class registry,tf,gke,gcs,kpsg planned
     class nginx ext
 ```
 
@@ -118,8 +119,9 @@ flowchart LR
 | API image | implemented | [`serving/Dockerfile`](../serving/Dockerfile): pinned `python:3.12.16-slim-trixie` (tag + digest), pinned requirements then the package with its `api` extra, no torch, uid 10001, healthcheck on `/ready` with the Python standard library, uvicorn without `--workers` |
 | Docker Compose stack | implemented (api + 5 monitoring services) | [`compose.yaml`](../compose.yaml), `make up` / `make down`: images pinned by tag + digest, model mounted read-only, UIs on 127.0.0.1 only, internal network `monitoring` for scrapes and OTLP, every service `cap_drop: ALL` + `no-new-privileges` + a memory limit without swap + json-file log rotation (10 MB × 3), Prometheus starts with the API without waiting for its health, so an API that cannot load its model still shows up in monitoring (`milk10k_model_ready` 0); Grafana waits for a healthy Prometheus; checked with one command from a fresh clone |
 | Compose deploy by the pipeline | implemented | Deploy stage: `docker compose up -d --no-build --wait` with `API_IMAGE_TAG`, model from the CI copy (read-only), Grafana password from a Jenkins credential; then smoke test and HTTP parity against `http://api:8000`. No automatic rollback: a failed deploy is rolled back by hand ([ci/README.md](../ci/README.md)) |
-| minikube with a Helm chart, 3 replicas | implemented; checked with 3 replicas | [`k8s/`](../k8s/README.md): Helm chart `milk10k-api` (Deployment + ClusterIP Service, `replicaCount: 3`), local values, namespace; image loaded into the node with a pinned tag; model from the host folder, read-only, sha256-checked by an init container; section 6. The pipeline's Kubernetes stage deploys each build with [`scripts/k8s_deploy.sh`](../scripts/k8s_deploy.sh) (1 replica, rollback on failure; [ci/README.md](../ci/README.md#the-kubernetes-stage)) |
-| kube-prometheus-stack via Helm | planned (bonus) | locally and on GKE |
+| minikube with a Helm chart, 3 replicas | implemented; checked with 3 replicas | [`k8s/`](../k8s/README.md): Helm chart `milk10k-api` (Deployment + ClusterIP Service, `replicaCount: 3`, a ServiceMonitor when the cluster has the CRD), local values, namespace; image loaded into the node with a pinned tag; model from the host folder, read-only, sha256-checked by an init container; section 6. The pipeline's Kubernetes stage deploys each build with [`scripts/k8s_deploy.sh`](../scripts/k8s_deploy.sh) (1 replica, rollback on failure; [ci/README.md](../ci/README.md#the-kubernetes-stage)) |
+| kube-prometheus-stack via Helm, local cluster | implemented; checked with 1 API replica | [`k8s/monitoring/`](../k8s/monitoring/): chart 93.10.0 pinned by OCI digest, values file with only the changed keys (no Alertmanager, no control-plane scrapes minikube cannot serve, 1 day retention, memory limits), Grafana login from a gitignored file via a Secret, UIs by port-forward on 127.0.0.1; the API chart's ServiceMonitor (one target per Pod, job `api`), the API dashboard as a ConfigMap, the 4 alert rules as a PrometheusRule generated from `alert-rules.yml`; section 6 |
+| kube-prometheus-stack on GKE | planned (bonus) | with the cloud deployment |
 | Terraform, GKE, GCS copy of the package | planned (bonus) | torn down right after the demo to limit cost |
 
 ## 2. `POST /predict` request path
@@ -287,7 +289,7 @@ network cleanly.
 | Resources | 2 GiB without extra swap, `-Xmx768m`, 1 executor, started on demand | Measured peak about 1.3 GiB; a 16 GB laptop also runs the stack |
 | Tests | Inside the Jenkins container with uv and the Makefile; uv cache under JENKINS_HOME | The same commands as on a developer machine; dependencies downloaded once |
 | Jenkins image | 2.580.2 LTS on JDK 21 by digest; kubectl v1.37.2 and Helm v4.3.2 with pinned sha256 | Current LTS; kubectl within one minor version of the cluster, Helm as on the host |
-| Cluster credentials | ServiceAccount with a Role in namespace `milk10k` only; 30-day token in a gitignored kubeconfig, loaded as a Jenkins file credential, bound only in the Kubernetes stage | Least privilege for the pipeline's kubectl and Helm, and the same shape a cloud cluster needs; the Docker socket still makes Jenkins root-equivalent on the host |
+| Cluster credentials | ServiceAccount with a Role in namespace `milk10k` only (the chart's Deployment, Service and ServiceMonitor); 30-day token in a gitignored kubeconfig, loaded as a Jenkins file credential, bound only in the Kubernetes stage | Least privilege for the pipeline's kubectl and Helm, and the same shape a cloud cluster needs; the Docker socket still makes Jenkins root-equivalent on the host |
 | Cluster network | Attach to the cluster's Docker network during the stage, detach in `post` | Works whether or not the cluster exists; Docker isolates the networks otherwise |
 | Image into the cluster | `docker save` piped into containerd in the node (`ctr images import`) | No registry and no minikube files inside Jenkins; becomes a `docker push` with a registry |
 | Replicas in CI | 1 replica, `maxSurge: 1`, `maxUnavailable: 0` | 3 replicas do not fit next to the Compose stack and Jenkins on 16 GB; the old Pod serves until the new one is ready |
@@ -358,3 +360,64 @@ How to run and check it: [k8s/README.md](../k8s/README.md). Measured with 3 repl
   after 8.7 s).
 - **Resources and security:** see the design table in [k8s/README.md](../k8s/README.md#design-choices) and the
   measurements in [serving_measurements.md](serving_measurements.md).
+
+### Monitoring on the local cluster
+
+```mermaid
+flowchart LR
+    make(["make k8s-monitoring<br/>helm upgrade --install kps, chart 93.10.0 by digest<br/>kubectl apply -k k8s/monitoring"])
+    secretfile[("k8s/secrets/grafana-admin-password<br/>gitignored, random")]
+    browser(["Browser on the same machine<br/>port-forward 127.0.0.1 :19090 :13000"])
+    jenkinsdeploy(["API deploy, by hand or from Jenkins<br/>values-local.yaml: serviceMonitor on"])
+
+    subgraph node["minikube node, profile milk10k"]
+        subgraph mon["Namespace monitoring"]
+            operator["Prometheus Operator<br/>CRDs: ServiceMonitor, PrometheusRule"]
+            prom["Prometheus v3.16<br/>1 day of data, rules every 15 s"]
+            graf["Grafana 13.3<br/>dashboard sidecar, login from Secret"]
+            ksm["kube-state-metrics"]
+            nodeexp["node-exporter<br/>sees the host's CPUs and memory"]
+            rule[("PrometheusRule milk10k-api<br/>generated from alert-rules.yml")]
+            dash[("ConfigMap milk10k-api-dashboard<br/>label grafana_dashboard=1")]
+            sec[("Secret grafana-admin")]
+        end
+        subgraph ns["Namespace milk10k"]
+            sm[("ServiceMonitor milk10k-api<br/>port http, 15 s, job api")]
+            pods["API Pods, /metrics on :8000"]
+        end
+        kubelet["kubelet, cAdvisor"]
+    end
+
+    make --> operator
+    make --> rule
+    make --> dash
+    secretfile -->|"make k8s-grafana-secret, piped, never printed"| sec
+    jenkinsdeploy -->|"created only if the CRD exists"| sm
+    operator -->|"reads ServiceMonitor and PrometheusRule (label release=kps), writes the config"| prom
+    sm -.->|"selects the Service's endpoints"| pods
+    prom -->|"scrape each Pod directly"| pods
+    prom --> kubelet
+    prom --> ksm
+    prom --> nodeexp
+    rule --> prom
+    dash --> graf
+    sec --> graf
+    graf -->|"datasource uid prometheus"| prom
+    browser --> prom
+    browser --> graf
+
+    classDef implemented fill:#e6f4ea,stroke:#1e7e34,stroke-width:2px,color:#111111
+    class make,secretfile,browser,jenkinsdeploy,operator,prom,graf,ksm,nodeexp,rule,dash,sec,sm,pods,kubelet implemented
+    style node fill:#f3faf5,stroke:#1e7e34,stroke-width:2px,color:#111111
+    style mon fill:#f3faf5,stroke:#1e7e34,stroke-width:2px,color:#111111
+    style ns fill:#f3faf5,stroke:#1e7e34,stroke-width:2px,color:#111111
+```
+
+- **One target per replica:** the ServiceMonitor points Prometheus at the Service's endpoints, so each API Pod is
+  scraped on its own address (labels `namespace`, `pod`), not through the load-balanced ClusterIP.
+- **Same rules as Compose:** the PrometheusRule is generated from `monitoring/prometheus/alert-rules.yml` and the job
+  is named `api`, so the promtool tests cover both. Scaling the API to 0 fired ApiDown (no target at all) after
+  about 1.5 min; it resolved when a Pod was scraped again.
+- **Footprint:** the monitoring Pods use about 0.6 GiB together (measured with 1 API replica); no Alertmanager.
+- **Removal:** Helm keeps the operator's CRDs; take the ServiceMonitor out of the API release before deleting them
+  (order in [k8s/README.md](../k8s/README.md#6-stop-or-remove)).
