@@ -53,17 +53,17 @@ flowchart LR
     repo -->|"poll every 5 min"| jenkins
     jenkins -->|"docker build, compose up"| api
     jenkins -.->|push| registry
-    registry -.-> mk
+    jenkins -->|"image into the node + helm upgrade"| mk
     registry -.-> gke
     tf -.->|creates| gke
 
     classDef implemented fill:#e6f4ea,stroke:#1e7e34,stroke-width:2px,color:#111111
     classDef planned fill:#ffffff,stroke:#666666,stroke-width:1px,stroke-dasharray:5 5,color:#111111
-    class client,release,api,pkg,prom,exporters,graf,jaeger,repo,jenkins implemented
-    class registry,mk,gke,tf planned
+    class client,release,api,pkg,prom,exporters,graf,jaeger,repo,jenkins,mk implemented
+    class registry,gke,tf planned
 ```
 
-Green and solid: running now. Dashed: planned (Kubernetes and cloud). The detailed diagrams (every component, the
+Green and solid: running now. Dashed: planned (cloud). The detailed diagrams (every component, the
 `POST /predict` request path, the pipeline stages and the CI network) are in [docs/architecture.md](docs/architecture.md).
 
 ## Repository structure
