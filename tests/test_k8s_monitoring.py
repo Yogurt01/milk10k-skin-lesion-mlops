@@ -29,7 +29,8 @@ def test_k8s_dashboard_uses_the_provisioned_datasource():
 
 def test_model_ready_stat_shows_only_pods_scraped_now():
     # A range query reduced to "last value" also lists Pods deleted earlier in the time range; an instant query returns
-    # only series Prometheus has now (a removed target's series are marked stale at once).
+    # only series Prometheus has now. A removed target's series are marked stale shortly after, about 20 s when checked
+    # (k8s/README.md, "What was checked").
     dashboard = json.loads((ROOT / "k8s/monitoring/dashboards/milk10k-api.json").read_text(encoding="utf-8"))
     panel = next(p for p in dashboard["panels"] if p.get("title") == "Model ready per Pod")
     assert panel["type"] == "stat"

@@ -33,16 +33,18 @@ Everything stays on your machine: no registry, no cloud account, no Ingress; the
 | Deploy from Jenkins (optional) | [5](#5-deploy-from-jenkins) | | |
 | Stop or remove | [6](#6-stop-or-remove) | | |
 
-How far this was checked: sections 1 to 3 were run as written in November 2026 with the profile name typed out
-(`milk10k`); sections 4 and 6 were run on that cluster with 1, 2 and 3 API replicas (see "What was checked" for what
-fits at the same time). The `$PROFILE` variable and a run of the
-whole guide on a fresh cluster under another profile name are **not checked yet**.
+How far this was checked: the whole guide (sections 1 to 4, with `PROFILE=milk10k-fresh`) was followed from a fresh
+clone on a new cluster in November 2026: model download, image build, 3/3 Ready without monitoring, then 1 replica
+with Prometheus and Grafana, API target up. Section 6 was run on the main cluster. What runs at the same time on a
+16 GB laptop: see "What you need".
 
 ## What you need
 
 - Docker and `kubectl` ([Ubuntu guide](../docs/install-ubuntu.md)), minikube and Helm (below). This folder was checked
   with minikube v1.39.0, Helm v4.3.2, kubectl v1.36 and Kubernetes v1.37.0.
-- The model package in `artifacts/model_package/final-P1a-kg-onnx` (`make fetch-model`, about 1.4 GB).
+- The model package in `artifacts/model_package/final-P1a-kg-onnx` (`make fetch-model`, about 1.4 GB). If the
+  download breaks off (e.g. `Connection reset by peer`), run it again: it keeps the files already verified and fetches
+  the rest.
 - The API image built locally, e.g. `docker build -t milk10k-api:<tag> serving` (any tag except `latest`).
 - **Memory.** One replica uses about 1.9 GiB once the model is loaded (plus file cache the kernel can reclaim), the
   empty cluster about 0.6 GiB; with 3 replicas the node used 6.3 GiB without monitoring. Prometheus + Grafana add
@@ -90,6 +92,7 @@ existing cluster):
 PROFILE=milk10k
 minikube start -p $PROFILE --driver=docker --memory=8g --cpus=12 --kubernetes-version=v1.37.0 \
   --mount-string="$PWD/artifacts/model_package:/mnt/milk10k-model"
+kubectl --context $PROFILE wait --for=condition=Ready node --all --timeout=2m   # NotReady for ~20 s after the start
 kubectl --context $PROFILE get nodes          # STATUS Ready
 ```
 
@@ -199,6 +202,13 @@ release `kps` in the namespace `monitoring`. It brings the Prometheus Operator, 
 (the same versions as the Compose stack), kube-state-metrics, node-exporter and the default Kubernetes dashboards.
 Alertmanager is off; alerts are shown in Prometheus, as in Compose.
 
+**First go down to 1 replica** (or 2): 3 replicas and the monitoring do not fit together on a 16 GB laptop (see
+"What you need"). Check the 3 replicas (section 3) before this step.
+
+```bash
+make k8s-deploy TAG=$TAG K8S_PROFILE=$PROFILE REPLICAS=1
+```
+
 **Install** (namespace, Grafana login, Helm release, then the API dashboard and alert rules):
 
 ```bash
@@ -218,9 +228,17 @@ kubectl --context $PROFILE apply -k k8s/monitoring
 ```
 
 Helm's `--wait` does not cover Prometheus itself: the operator creates its StatefulSet after Helm returns, hence the
-two `kubectl` waits. If the API was deployed before this step, deploy it once more (section 2) so the chart adds the
-ServiceMonitor. Ignore the Grafana password commands in Helm's notes: they refer to a Secret this setup does not
-create.
+two `kubectl` waits. Then deploy the API once more **with the same replica count** (without `REPLICAS` the chart goes
+back to 3), so the chart adds the ServiceMonitor:
+
+```bash
+make k8s-deploy TAG=$TAG K8S_PROFILE=$PROFILE REPLICAS=1
+kubectl --context $PROFILE -n milk10k get servicemonitor        # milk10k-api
+```
+
+Between the alert rules and this deploy Prometheus has no API target, so ApiDown can fire for about a minute; it
+resolves once the target is scraped. Ignore the Grafana password commands in Helm's notes: they refer to a Secret this
+setup does not create.
 
 ```bash
 helm list --kube-context $PROFILE -A                   # kps (kube-prometheus-stack-93.10.0) and milk10k-api, deployed
@@ -361,6 +379,8 @@ Monitoring:
 | ApiDown drill, 3 replicas | targets gone 6 s after scaling to 0; pending after 21–42 s, firing 1 min later; back to 3: Ready in 8 s, 3 targets up in 19 s, resolved in 29 s; also from 3 to 0 and back to 1 |
 | 2 replicas with Grafana | 40 predictions: 20 / 20 per Pod, all 200; every API panel has data except "5xx share"; node 5.7 GiB |
 | Memory (node container without file cache, `docker stats`) | monitoring Pods together about 0.6 GiB; node 3.7–4.3 GiB with 1 API Pod, 5.2–5.7 GiB with 2, 7.2–7.3 GiB with 3 (Grafana at 0 for the last: 6.9 GiB); with 3 the node kept hitting its 8 GiB cap and the host's swap filled within an hour (out of memory, see What you need) |
+| Whole guide on a fresh cluster (`PROFILE=milk10k-fresh`, fresh clone) | model downloaded and verified (18 files); 3/3 Ready 9 s after the deploy, sha256 check passed in each Pod, smoke test OK; node 6.3 GiB, host swap under 3 MiB; then 1 replica + monitoring: release `kps` installed in 2 min 18 s, 12 targets up, API target up after the second deploy; node 3.7–3.9 GiB; no OOM; cluster deleted afterwards |
+| "Model ready per Pod" after a Pod was replaced | the panel's instant query lists only the running Pod about 20 s after the old one was deleted; the previous range form still listed the deleted Pod |
 | Remove and reinstall | removing the CRDs before the ServiceMonitor broke the next API deploy (as described in section 6); the order in section 6 worked, a deploy without monitoring then left the ServiceMonitor out |
 
 Measured serving cost (memory, latency, threads): [docs/serving_measurements.md](../docs/serving_measurements.md).
