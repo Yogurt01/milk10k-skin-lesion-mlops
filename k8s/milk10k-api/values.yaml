@@ -88,3 +88,13 @@ tmpSizeLimit: 256Mi
 service:
   type: ClusterIP
   port: 8000
+
+# Prometheus Operator ServiceMonitor (templates/servicemonitor.yaml): one scrape target per API Pod, every 15 s as in
+# the Compose stack. Created only when enabled AND the ServiceMonitor CRD exists in the cluster (kube-prometheus-stack
+# installed), so the chart installs without it. `labels` must match the Prometheus resource's serviceMonitorSelector:
+# kube-prometheus-stack selects `release: <its release name>` by default.
+serviceMonitor:
+  enabled: false
+  labels: {}
+  interval: 15s
+  scrapeTimeout: 10s

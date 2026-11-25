@@ -1,0 +1,36 @@
+{{- /*
+Prometheus Operator ServiceMonitor for the API (kube-prometheus-stack). Prometheus reads the Service's endpoints and
+scrapes every ready API Pod directly: one target per replica, not one load-balanced target through the Service.
+Rendered only when serviceMonitor.enabled is true AND the cluster serves the ServiceMonitor API (the CRD is installed),
+so the chart still installs on a cluster without the monitoring stack.
+*/ -}}
+{{- if and .Values.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "milk10k-api.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "milk10k-api.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+      relabelings:
+        # The operator names the job after the Service; set it to "api" so the alert rules and their promtool tests
+        # are the same as in the Compose stack (monitoring/prometheus/alert-rules.yml uses job="api").
+        - action: replace
+          targetLabel: job
+          replacement: api
+{{- end }}

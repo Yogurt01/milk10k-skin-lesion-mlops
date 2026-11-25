@@ -7,3 +7,11 @@ image:
 model:
   source: hostPath
   hostPath: /mnt/milk10k-model/final-P1a-kg-onnx
+
+# Scraped by the local kube-prometheus-stack release "kps" (k8s/README.md, "Monitoring"). Without that release the
+# ServiceMonitor CRD is missing and the chart simply leaves the ServiceMonitor out. On in this file so the Jenkins deploy
+# (values-local.yaml + values-ci.yaml) keeps it too.
+serviceMonitor:
+  enabled: true
+  labels:
+    release: kps
