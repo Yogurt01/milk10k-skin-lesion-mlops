@@ -1,0 +1,19 @@
+# The API's dashboard and alert rules for the monitoring release (`make k8s-monitoring`, or
+# kubectl --context milk10k apply -k k8s/monitoring). Applied after the kube-prometheus-stack release, which installs
+# the PrometheusRule CRD and Grafana's dashboard sidecar.
+# - The dashboard JSON becomes the ConfigMap milk10k-api-dashboard with the label grafana_dashboard=1; the sidecar
+#   (chart default: that label, every namespace) copies it into Grafana within about a minute.
+# - prometheusrule-api.yaml is generated from monitoring/prometheus/alert-rules.yml (make k8s-rules).
+# The Helm values file next to this one is not part of it.
+namespace: monitoring
+resources:
+  - prometheusrule-api.yaml
+configMapGenerator:
+  - name: milk10k-api-dashboard
+    files:
+      - milk10k-api.json=dashboards/milk10k-api.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/part-of: milk10k

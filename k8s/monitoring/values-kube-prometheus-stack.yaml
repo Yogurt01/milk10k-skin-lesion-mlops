@@ -1,0 +1,108 @@
+# Values for kube-prometheus-stack 93.10.0 on the local minikube cluster (release "kps", namespace "monitoring").
+# Only the keys changed from the chart's own defaults (`helm show values` of that version); everything else is the
+# chart default. Install command and checks: k8s/README.md ("Monitoring").
+#
+# Footprint: one small single-node cluster next to API Pods of ~1.9 GiB each inside an 8 GiB node, so every
+# component gets a memory limit, Alertmanager is off and data lives 1 day in the Pod (no volume).
+
+# No Alertmanager: alerts are visible in Prometheus (Alerts page), as in the Compose stack; nothing is sent.
+alertmanager:
+  enabled: false
+
+# minikube runs etcd, the scheduler, the controller manager and kube-proxy with their metrics on the node's loopback
+# address, so Prometheus cannot reach them; their targets would be down and their "down" alerts would fire for ever.
+# Turning a component off here also drops its default rule group (the rule templates check these switches).
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+defaultRules:
+  rules:
+    alertmanager: false  # rules about Alertmanager itself, which is off
+  disabled:
+    # Both only make sense with an Alertmanager: one says no Alertmanager is connected, the other always fires on
+    # purpose so that Alertmanager can check the alert path.
+    PrometheusNotConnectedToAlertmanagers: true
+    Watchdog: true
+
+prometheus:
+  prometheusSpec:
+    retention: 1d
+    # 30 s for the cluster targets (the chart's default); the API's ServiceMonitor sets 15 s for its own target,
+    # the same as the Compose stack. Rules are evaluated every 15 s, as in Compose and the promtool tests.
+    scrapeInterval: 30s
+    evaluationInterval: 15s
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+
+grafana:
+  # The admin login comes from a Secret created by `make k8s-grafana-secret` (keys admin-user, admin-password);
+  # the password is never in this file.
+  admin:
+    existingSecret: grafana-admin
+  # Same no-calls-home settings as the Compose Grafana (compose.yaml).
+  grafana.ini:
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+      check_for_plugin_updates: false
+      feedback_links_enabled: false
+    plugins:
+      preinstall_disabled: true
+      public_key_retrieval_disabled: true
+    security:
+      disable_gravatar: true
+    news:
+      news_feed_enabled: false
+    users:
+      allow_sign_up: false
+  # Alertmanager is off, so no Alertmanager data source.
+  sidecar:
+    datasources:
+      alertmanager:
+        enabled: false
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 96Mi

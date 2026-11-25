@@ -61,6 +61,8 @@ htmlcov/
 !.env.example
 # Jenkins secret files (make ci-secrets)
 ci/secrets/
+# Grafana admin password for the local cluster (make k8s-grafana-secret)
+k8s/secrets/
 *.pem
 *.key
 *credentials*.json

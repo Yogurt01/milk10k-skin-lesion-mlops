@@ -19,8 +19,12 @@ K8S_RELEASE ?= milk10k-api
 # The same deploy script as the Jenkins Kubernetes stage (load the image into the node, helm upgrade, rollout status)
 K8S_SCRIPT = KUBE_CONTEXT=$(K8S_PROFILE) K8S_NODE=$(K8S_PROFILE) K8S_NAMESPACE=$(K8S_NAMESPACE) \
 	K8S_RELEASE=$(K8S_RELEASE) REPLICAS=$(REPLICAS) scripts/k8s_deploy.sh
+# Prometheus + Grafana on the local cluster (k8s/README.md, "Monitoring"): kube-prometheus-stack pinned by version
+# and OCI digest (Helm refuses the chart if the digest does not match), release kps in namespace monitoring
+KPS_CHART = oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack:93.10.0@sha256:3dcc77c6c3745df0ef2454e04315cd26d010f6948a8167392ac4e602ecdacba7
+KPS_RELEASE = kps
 
-.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-kubeconfig ci-down k8s-deploy k8s-stop tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-kubeconfig ci-down k8s-deploy k8s-grafana-secret k8s-monitoring k8s-rules k8s-stop tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -116,6 +120,19 @@ k8s-deploy: ## Deploy the API to the running minikube profile: make k8s-deploy T
 	kubectl --context $(K8S_PROFILE) apply -f k8s/namespace.yaml
 	$(K8S_SCRIPT) load $(TAG)
 	$(K8S_SCRIPT) deploy $(TAG)
+
+k8s-grafana-secret: ## Grafana admin Secret in namespace monitoring from k8s/secrets/grafana-admin-password (created once, random, never printed)
+	K8S_PROFILE=$(K8S_PROFILE) scripts/k8s_grafana_secret.sh
+
+k8s-monitoring: k8s-grafana-secret ## Prometheus + Grafana (kube-prometheus-stack, pinned) + the API dashboard and alert rules, in namespace monitoring
+	helm upgrade --install $(KPS_RELEASE) $(KPS_CHART) --kube-context $(K8S_PROFILE) -n monitoring \
+		-f k8s/monitoring/values-kube-prometheus-stack.yaml --wait --timeout 10m
+	kubectl --context $(K8S_PROFILE) -n monitoring wait --for=create statefulset/prometheus-kps-kube-prometheus-stack-prometheus --timeout=2m
+	kubectl --context $(K8S_PROFILE) -n monitoring rollout status statefulset/prometheus-kps-kube-prometheus-stack-prometheus --timeout=5m
+	kubectl --context $(K8S_PROFILE) apply -k k8s/monitoring
+
+k8s-rules: ## Regenerate k8s/monitoring/prometheusrule-api.yaml from monitoring/prometheus/alert-rules.yml
+	python3 scripts/k8s_prometheusrule.py
 
 k8s-stop: ## Stop the minikube profile (frees its memory; cluster, loaded images and model mount stay for the next start)
 	minikube stop -p $(K8S_PROFILE)

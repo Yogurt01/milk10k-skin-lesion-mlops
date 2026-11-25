@@ -1,0 +1,10 @@
+# Namespace for Prometheus and Grafana (Helm release "kps" of kube-prometheus-stack) on the local cluster.
+# Applied by `make k8s-grafana-secret` and `make k8s-monitoring`.
+# Pod Security: node-exporter reads the node's /proc and /sys through hostPath volumes with the node's network and PID
+# namespaces, which only the Privileged standard allows, so no Pod Security level is set here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: milk10k

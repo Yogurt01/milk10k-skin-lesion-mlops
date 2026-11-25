@@ -1,0 +1,59 @@
+# GENERATED from monitoring/prometheus/alert-rules.yml (comments there) by scripts/k8s_prometheusrule.py
+# (make k8s-rules); do not edit.
+# The API's alert rules for the Prometheus of the local kube-prometheus-stack release "kps": Prometheus loads every
+# PrometheusRule with the label release=kps. The rules use job="api", which the API chart's ServiceMonitor sets.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: milk10k-api
+  namespace: monitoring
+  labels:
+    release: kps
+    app.kubernetes.io/part-of: milk10k
+spec:
+  groups:
+    - name: milk10k-api
+      rules:
+        - alert: ApiDown
+          expr: up{job="api"} == 0 or absent(up{job="api"})
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: >-
+              {{ if $labels.instance }}API target {{ $labels.instance }} cannot be scraped{{ else
+              }}No API target in Prometheus{{ end }}
+            description: >-
+              {{ if $labels.instance }}Prometheus has not reached /metrics of {{ $labels.instance }} for 1 minute.{{ else
+              }}Service discovery has found no api container for 1 minute.{{ end }}
+
+        - alert: ApiModelNotReady
+          expr: milk10k_model_ready{job="api"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Model not loaded on API target {{ $labels.instance }}"
+            description: "milk10k_model_ready has been 0 for 2 minutes on {{ $labels.instance }}; /ready shows the load error."
+
+        - alert: ApiHighErrorRate
+          expr: |
+            sum(rate(milk10k_http_requests_total{route="/predict", status=~"5.."}[1m]))
+              / sum(rate(milk10k_http_requests_total{route="/predict"}[1m])) > 0.1
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than 10% of /predict responses are 5xx"
+            description: "5xx share of /predict over the last minute: {{ $value | humanizePercentage }}."
+
+        - alert: ApiHighLatencyP95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(milk10k_http_request_duration_seconds_bucket{route="/predict"}[5m]))) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "p95 latency of /predict above 3 s"
+            description: "p95 of /predict over 5 minutes: {{ $value | humanizeDuration }}."
