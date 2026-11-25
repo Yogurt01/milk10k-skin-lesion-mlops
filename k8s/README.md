@@ -29,12 +29,13 @@ Everything stays on your machine: no registry, no cloud account, no Ingress; the
 | Tools: Docker, kubectl, minikube, Helm; model package; API image | [What you need](#what-you-need) | | |
 | Cluster with the model folder mounted | [1](#1-create-the-cluster) | about 1 min | empty node about 0.6 GiB |
 | API, 3 replicas | [2](#2-deploy), [3](#3-verify) | under 1 min | about 1.9 GiB per Pod |
-| Prometheus + Grafana, API dashboard and alerts | [4](#4-monitoring-prometheus-and-grafana) | about 2 min (first time: image downloads) | about 0.6 GiB |
+| Prometheus + Grafana, API dashboard and alerts | [4](#4-monitoring-prometheus-and-grafana) | about 2 min (first time: image downloads) | about 0.6 GiB in its Pods, 1.0–1.7 GiB in the node |
 | Deploy from Jenkins (optional) | [5](#5-deploy-from-jenkins) | | |
 | Stop or remove | [6](#6-stop-or-remove) | | |
 
 How far this was checked: sections 1 to 3 were run as written in November 2026 with the profile name typed out
-(`milk10k`); sections 4 and 6 were run with 1 API replica on that cluster. The `$PROFILE` variable and a run of the
+(`milk10k`); sections 4 and 6 were run on that cluster with 1, 2 and 3 API replicas (see "What was checked" for what
+fits at the same time). The `$PROFILE` variable and a run of the
 whole guide on a fresh cluster under another profile name are **not checked yet**.
 
 ## What you need
@@ -44,10 +45,16 @@ whole guide on a fresh cluster under another profile name are **not checked yet*
 - The model package in `artifacts/model_package/final-P1a-kg-onnx` (`make fetch-model`, about 1.4 GB).
 - The API image built locally, e.g. `docker build -t milk10k-api:<tag> serving` (any tag except `latest`).
 - **Memory.** One replica uses about 1.9 GiB once the model is loaded (plus file cache the kernel can reclaim), the
-  empty cluster about 0.6 GiB, Prometheus + Grafana about 0.6 GiB; with 3 replicas the node used 6.3 GiB without
-  monitoring. On a 16 GB laptop, stop the Compose stack (`make down`) and Jenkins (`make ci-down`) first and close what
-  you can: the 3-replica checks below were run with about 10 GiB available before the cluster started, and about
-  4 GiB stayed available. Check with `free -h`.
+  empty cluster about 0.6 GiB; with 3 replicas the node used 6.3 GiB without monitoring. Prometheus + Grafana add
+  1.0–1.7 GiB to the node. On a 16 GB laptop, stop the Compose stack (`make down`) and Jenkins (`make ci-down`) first
+  and close what you can: the 3-replica checks below were run with about 10 GiB available before the cluster started,
+  and about 4 GiB stayed available. Check with `free -h`.
+- **3 replicas and monitoring do not run together on a 16 GB laptop.** The node reached its 8 GiB cap (7.2–7.3 GiB
+  without file cache), host swap rose above 1 GiB within minutes, and when it was left running with a browser open the
+  machine ran out of memory: the kernel killed Prometheus and other monitoring processes (the API Pods survived). Run
+  monitoring with 1 or 2 API replicas; for the 3-replica check with monitoring, scale Grafana to 0 first
+  (`kubectl --context $PROFILE -n monitoring scale deployment/kps-grafana --replicas=0`), check, and scale the API back
+  down right after.
 
 ### Install minikube and Helm (Linux x86-64)
 
@@ -234,15 +241,20 @@ kubectl --context $PROFILE -n monitoring port-forward --address 127.0.0.1 svc/kp
   "MILK10k: API on Kubernetes" (from the ConfigMap), and the chart's defaults, e.g. "Kubernetes / Compute Resources /
   Pod" and "Node Exporter / Nodes" for node and Pod resources.
 
-**Send some predictions** through the Service from inside the cluster (the smoke test, piped into an API Pod's Python;
-it posts a synthetic gradient image, never a lesion image), then look at the dashboard:
+**Send some predictions** through the Service from inside the cluster, then look at the dashboard. The loop pipes the
+smoke test into an API Pod's Python; each run posts one synthetic gradient image (never a lesion image) on a new
+connection, so the Service spreads them over the Pods. Its own verdict is discarded on purpose: through the Service its
+`/predict` and its `/metrics` check can reach different Pods, and a Pod that has not served a prediction yet has no
+stage-time series, so the check can fail although nothing is wrong. Use the smoke test against one Pod (section 3).
 
 ```bash
 POD=$(kubectl --context $PROFILE -n milk10k get pods -o name | head -1)
-for i in $(seq 20); do
-  kubectl --context $PROFILE -n milk10k exec -i $POD -c api -- python - --base-url http://milk10k-api:8000 < scripts/smoke_test.py | tail -1
+for i in $(seq 40); do
+  kubectl --context $PROFILE -n milk10k exec -i $POD -c api -- python - --base-url http://milk10k-api:8000 < scripts/smoke_test.py > /dev/null 2>&1
 done
 ```
+
+Count them per Pod in Prometheus (Graph page): `sum by (pod, status) (milk10k_http_requests_total{namespace="milk10k", route="/predict"})`.
 
 **Alert rules.** The API's four rules (ApiDown, ApiModelNotReady, ApiHighErrorRate, ApiHighLatencyP95) are the same
 as in Compose: `prometheusrule-api.yaml` is generated from `monitoring/prometheus/alert-rules.yml`, and the chart's
@@ -252,9 +264,12 @@ ServiceMonitor names the job `api`, so the same promtool tests apply. They are l
 ```bash
 kubectl --context $PROFILE -n milk10k scale deployment/milk10k-api --replicas=0
 # about 30 s: ApiDown pending (no API target at all); 1 min later: firing
-kubectl --context $PROFILE -n milk10k scale deployment/milk10k-api --replicas=3    # the count you deployed
+kubectl --context $PROFILE -n milk10k scale deployment/milk10k-api --replicas=1    # or the count you deployed
 # resolved as soon as a Pod is scraped again
 ```
+
+`kubectl scale` changes the Deployment behind Helm's back; the next `helm upgrade` (or Jenkins deploy) sets the
+replica count from the values again.
 
 A restarted Pod can show ApiModelNotReady as *pending* for one scrape while it loads the model; it clears on the next
 scrape and only fires after 2 minutes.
@@ -331,7 +346,7 @@ Screenshots of a later deployment of the same release: [Pods 3/3](../docs/images
 [sha256 check of each Pod](../docs/images/k8s-verify-model.png), [20 requests spread over the 3 Pods](../docs/images/k8s-spread.png),
 [probes, requests and limits](../docs/images/k8s-describe.png), [Helm release](../docs/images/helm-list.png).
 
-Monitoring, with 1 API replica (the 3-replica run is the next check):
+Monitoring:
 
 | Check | Result |
 |---|---|
@@ -341,8 +356,11 @@ Monitoring, with 1 API replica (the 3-replica run is the next check):
 | Grafana | login with the Secret (without it: 401); 24 default dashboards + "MILK10k: API on Kubernetes"; after 40 predictions every API panel has data except "5xx share" (no 5xx happened) |
 | Default dashboards | Pod memory 1.9 GiB of the 2.5 GiB limit; node-exporter reports the host (16 CPUs, 14.8 GiB) |
 | Alert rules | 4 loaded, health ok; the promtool tests pass on the Kubernetes copy too |
-| ApiDown drill (scale to 0 and back to 1) | no target after 6 s; pending after 36 s, firing 1 min later (no API target at all); resolved as soon as the new Pod was scraped |
-| Memory | monitoring Pods together about 0.6 GiB (Grafana 0.29 GiB + 2 × 0.08 GiB sidecars); node container 3.7–4.3 GiB with 1 API Pod |
+| ApiDown drill, 1 replica (scale to 0 and back) | no target after 6 s; pending after 36 s, firing 1 min later (no API target at all); resolved as soon as the new Pod was scraped |
+| 3 replicas (Grafana at 0) | 3 API targets up, one per Pod; 30 predictions through the Service: 14 / 10 / 6 per Pod, all 200 |
+| ApiDown drill, 3 replicas | targets gone 6 s after scaling to 0; pending after 21–42 s, firing 1 min later; back to 3: Ready in 8 s, 3 targets up in 19 s, resolved in 29 s; also from 3 to 0 and back to 1 |
+| 2 replicas with Grafana | 40 predictions: 20 / 20 per Pod, all 200; every API panel has data except "5xx share"; node 5.7 GiB |
+| Memory (node container without file cache, `docker stats`) | monitoring Pods together about 0.6 GiB; node 3.7–4.3 GiB with 1 API Pod, 5.2–5.7 GiB with 2, 7.2–7.3 GiB with 3 (Grafana at 0 for the last: 6.9 GiB); with 3 the node kept hitting its 8 GiB cap and the host's swap filled within an hour (out of memory, see What you need) |
 | Remove and reinstall | removing the CRDs before the ServiceMonitor broke the next API deploy (as described in section 6); the order in section 6 worked, a deploy without monitoring then left the ServiceMonitor out |
 
 Measured serving cost (memory, latency, threads): [docs/serving_measurements.md](../docs/serving_measurements.md).

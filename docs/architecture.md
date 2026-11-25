@@ -7,7 +7,8 @@ local Jenkins, configured as code, runs the pipeline test → build → deploy �
 push to `main`; Prometheus has 4 alert rules. The API also runs as 3 replicas on a local minikube cluster from a Helm
 chart (section 6, `make k8s-deploy`), and the pipeline deploys each build's image there (1 replica next to the Compose
 stack). Prometheus and Grafana run on that cluster from a pinned Helm chart (kube-prometheus-stack) and scrape each
-API Pod; checked so far with 1 API replica. The cloud parts are planned. The diagrams are derived from the code and are updated whenever a part is added.
+API Pod; checked with 1, 2 and 3 API replicas (3 replicas and monitoring together exceed the 16 GB laptop, so they run
+together only briefly, with Grafana stopped). The cloud parts are planned. The diagrams are derived from the code and are updated whenever a part is added.
 
 Styling in every diagram:
 - **Solid** box or arrow: implemented.
@@ -120,7 +121,7 @@ flowchart LR
 | Docker Compose stack | implemented (api + 5 monitoring services) | [`compose.yaml`](../compose.yaml), `make up` / `make down`: images pinned by tag + digest, model mounted read-only, UIs on 127.0.0.1 only, internal network `monitoring` for scrapes and OTLP, every service `cap_drop: ALL` + `no-new-privileges` + a memory limit without swap + json-file log rotation (10 MB × 3), Prometheus starts with the API without waiting for its health, so an API that cannot load its model still shows up in monitoring (`milk10k_model_ready` 0); Grafana waits for a healthy Prometheus; checked with one command from a fresh clone |
 | Compose deploy by the pipeline | implemented | Deploy stage: `docker compose up -d --no-build --wait` with `API_IMAGE_TAG`, model from the CI copy (read-only), Grafana password from a Jenkins credential; then smoke test and HTTP parity against `http://api:8000`. No automatic rollback: a failed deploy is rolled back by hand ([ci/README.md](../ci/README.md)) |
 | minikube with a Helm chart, 3 replicas | implemented; checked with 3 replicas | [`k8s/`](../k8s/README.md): Helm chart `milk10k-api` (Deployment + ClusterIP Service, `replicaCount: 3`, a ServiceMonitor when the cluster has the CRD), local values, namespace; image loaded into the node with a pinned tag; model from the host folder, read-only, sha256-checked by an init container; section 6. The pipeline's Kubernetes stage deploys each build with [`scripts/k8s_deploy.sh`](../scripts/k8s_deploy.sh) (1 replica, rollback on failure; [ci/README.md](../ci/README.md#the-kubernetes-stage)) |
-| kube-prometheus-stack via Helm, local cluster | implemented; checked with 1 API replica | [`k8s/monitoring/`](../k8s/monitoring/): chart 93.10.0 pinned by OCI digest, values file with only the changed keys (no Alertmanager, no control-plane scrapes minikube cannot serve, 1 day retention, memory limits), Grafana login from a gitignored file via a Secret, UIs by port-forward on 127.0.0.1; the API chart's ServiceMonitor (one target per Pod, job `api`), the API dashboard as a ConfigMap, the 4 alert rules as a PrometheusRule generated from `alert-rules.yml`; section 6 |
+| kube-prometheus-stack via Helm, local cluster | implemented; checked with 1, 2 and 3 API replicas (3 only briefly, Grafana stopped: memory) | [`k8s/monitoring/`](../k8s/monitoring/): chart 93.10.0 pinned by OCI digest, values file with only the changed keys (no Alertmanager, no control-plane scrapes minikube cannot serve, 1 day retention, memory limits), Grafana login from a gitignored file via a Secret, UIs by port-forward on 127.0.0.1; the API chart's ServiceMonitor (one target per Pod, job `api`), the API dashboard as a ConfigMap, the 4 alert rules as a PrometheusRule generated from `alert-rules.yml`; section 6 |
 | kube-prometheus-stack on GKE | planned (bonus) | with the cloud deployment |
 | Terraform, GKE, GCS copy of the package | planned (bonus) | torn down right after the demo to limit cost |
 
@@ -418,6 +419,9 @@ flowchart LR
 - **Same rules as Compose:** the PrometheusRule is generated from `monitoring/prometheus/alert-rules.yml` and the job
   is named `api`, so the promtool tests cover both. Scaling the API to 0 fired ApiDown (no target at all) after
   about 1.5 min; it resolved when a Pod was scraped again.
-- **Footprint:** the monitoring Pods use about 0.6 GiB together (measured with 1 API replica); no Alertmanager.
+- **Footprint:** the monitoring Pods use about 0.6 GiB together, 1.0–1.7 GiB in the node; no Alertmanager. With 3
+  API replicas the 8 GiB node is at its cap and the laptop runs out of memory within an hour (the kernel killed
+  Prometheus and other monitoring processes; the API Pods survived), so monitoring normally runs next to 1 or 2
+  replicas.
 - **Removal:** Helm keeps the operator's CRDs; take the ServiceMonitor out of the API release before deleting them
   (order in [k8s/README.md](../k8s/README.md#6-stop-or-remove)).
