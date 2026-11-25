@@ -437,9 +437,12 @@
             "uid": "prometheus"
           },
           "expr": "milk10k_model_ready{namespace=\"$namespace\"}",
-          "legendFormat": "{{pod}}"
+          "legendFormat": "{{pod}}",
+          "instant": true,
+          "range": false
         }
-      ]
+      ],
+      "description": "1 once a Pod's model is loaded. Instant query: only Pods that are scraped now, not Pods deleted earlier in the time range."
     },
     {
       "type": "row",

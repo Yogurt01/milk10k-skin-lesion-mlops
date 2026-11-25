@@ -25,3 +25,15 @@ def test_k8s_dashboard_uses_the_provisioned_datasource():
     assert {t["datasource"]["uid"] for t in targets} == {"prometheus"}
     # Every API query is limited to the selected namespace.
     assert all('namespace="$namespace"' in t["expr"] for t in targets)
+
+
+def test_model_ready_stat_shows_only_pods_scraped_now():
+    # A range query reduced to "last value" also lists Pods deleted earlier in the time range; an instant query returns
+    # only series Prometheus has now (a removed target's series are marked stale at once).
+    dashboard = json.loads((ROOT / "k8s/monitoring/dashboards/milk10k-api.json").read_text(encoding="utf-8"))
+    panel = next(p for p in dashboard["panels"] if p.get("title") == "Model ready per Pod")
+    assert panel["type"] == "stat"
+    (target,) = panel["targets"]
+    assert target["expr"] == 'milk10k_model_ready{namespace="$namespace"}'
+    assert target["instant"] is True
+    assert target["range"] is False
