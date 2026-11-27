@@ -81,7 +81,7 @@ Green and solid: running now. Dashed: planned (cloud). The detailed diagrams (ev
 ├── docs/                 architecture, install guide, serving measurements, full parity report
 ├── k8s/                  Helm chart for the API on a local Kubernetes cluster (minikube), Prometheus + Grafana
 │                         via Helm (monitoring/), and the step-by-step guide
-├── deploy/               Terraform for the cloud (planned)
+├── deploy/               Terraform for a short-lived GKE test and its guide (prepared, not yet run on Google Cloud)
 ├── compose.yaml          the local stack: API + Prometheus, node-exporter, cAdvisor, Grafana, Jaeger
 ├── Jenkinsfile           the pipeline: test → build → deploy → smoke → parity → Kubernetes
 ├── Makefile              every command of this README (`make help`)

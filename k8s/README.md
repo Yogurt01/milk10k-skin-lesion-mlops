@@ -15,8 +15,10 @@ Everything stays on your machine: no registry, no cloud account, no Ingress; the
 | [`milk10k-api/values.yaml`](milk10k-api/values.yaml) | Defaults with the reasons for each number (threads, memory, probes, rollout) |
 | [`values-local.yaml`](values-local.yaml) | Settings for the local cluster (image loaded into the node, model from a host folder, ServiceMonitor on) |
 | [`values-ci.yaml`](values-ci.yaml) | Added by the Jenkins deploy: 1 replica, the new Pod starts before the old one stops |
+| [`values-gke.yaml`](values-gke.yaml) | For the GKE test only, instead of the two files above: image from Artifact Registry, model copied from a private bucket ([deploy/README.md](../deploy/README.md)) |
 | [`ci-rbac.yaml`](ci-rbac.yaml) | ServiceAccount `ci-deployer` for Jenkins, with rights in this namespace only ([ci/README.md](../ci/README.md#the-kubernetes-stage)) |
 | [`monitoring/values-kube-prometheus-stack.yaml`](monitoring/values-kube-prometheus-stack.yaml) | Helm values for Prometheus + Grafana (kube-prometheus-stack), only the keys changed from the chart defaults |
+| [`monitoring/values-kps-gke.yaml`](monitoring/values-kps-gke.yaml) | Added on GKE only, on top of the values file above |
 | [`monitoring/namespace.yaml`](monitoring/namespace.yaml) | The `monitoring` namespace |
 | [`monitoring/kustomization.yaml`](monitoring/kustomization.yaml) | The API dashboard (ConfigMap for Grafana) and the API alert rules (PrometheusRule) |
 | [`monitoring/dashboards/milk10k-api.json`](monitoring/dashboards/milk10k-api.json) | Grafana dashboard "MILK10k: API on Kubernetes" |

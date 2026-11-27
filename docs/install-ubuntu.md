@@ -120,5 +120,5 @@ On the reference machine, 2026-11-19, as the normal user:
 
 Clone the repository and start the stack: [README, Install and run](../README.md#install-and-run-on-ubuntu).
 
-Tools for the Kubernetes and cloud parts (minikube, Helm, Terraform, gcloud) get their own sections when those parts
-are added.
+Tools for the Kubernetes part (minikube, Helm): [k8s/README.md](../k8s/README.md#what-you-need); for the cloud part
+(Terraform, gcloud, optional kubeconform and tflint): [deploy/README.md](../deploy/README.md#what-you-need).
