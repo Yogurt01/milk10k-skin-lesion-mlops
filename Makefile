@@ -22,9 +22,15 @@ K8S_SCRIPT = KUBE_CONTEXT=$(K8S_PROFILE) K8S_NODE=$(K8S_PROFILE) K8S_NAMESPACE=$
 # Prometheus + Grafana on the local cluster (k8s/README.md, "Monitoring"): kube-prometheus-stack pinned by version
 # and OCI digest (Helm refuses the chart if the digest does not match), release kps in namespace monitoring
 KPS_CHART = oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack:93.10.0@sha256:3dcc77c6c3745df0ef2454e04315cd26d010f6948a8167392ac4e602ecdacba7
+# MLflow (scripts/mlflow_import.py): the imported training run history, on demand only (never a Compose service).
+# Own venv and SQLite store under artifacts/mlflow/ (gitignored), separate from the serving venv; telemetry off.
+MLFLOW_DIR ?= artifacts/mlflow
+MLFLOW_PORT ?= 5000
+MLFLOW_VENV = $(MLFLOW_DIR)/.venv
+MLFLOW_ENV = MLFLOW_DISABLE_TELEMETRY=true DO_NOT_TRACK=true MLFLOW_DISABLE_AGENT_HINT=1
 KPS_RELEASE = kps
 
-.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-kubeconfig ci-down k8s-deploy k8s-grafana-secret k8s-monitoring k8s-rules k8s-stop tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-kubeconfig ci-down k8s-deploy k8s-grafana-secret k8s-monitoring k8s-rules k8s-stop mlflow-import mlflow-ui tf-plan
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -136,6 +142,20 @@ k8s-rules: ## Regenerate k8s/monitoring/prometheusrule-api.yaml from monitoring/
 
 k8s-stop: ## Stop the minikube profile (frees its memory; cluster, loaded images and model mount stay for the next start)
 	minikube stop -p $(K8S_PROFILE)
+
+# The venv is rebuilt when the pinned requirements change (a stamp file, not the python symlink).
+$(MLFLOW_VENV)/.installed: scripts/requirements-mlflow.txt
+	uv venv $(MLFLOW_VENV) --python 3.12 --allow-existing
+	uv pip install --python $(MLFLOW_VENV)/bin/python -r scripts/requirements-mlflow.txt
+	touch $@
+
+mlflow-import: $(MLFLOW_VENV)/.installed ## Import the training run history into the local MLflow store (idempotent; MLFLOW_ARGS=--check: counts only)
+	$(MLFLOW_ENV) $(MLFLOW_VENV)/bin/python scripts/mlflow_import.py --store $(MLFLOW_DIR)/mlflow.db $(MLFLOW_ARGS)
+
+mlflow-ui: $(MLFLOW_VENV)/.installed ## MLflow UI on 127.0.0.1:MLFLOW_PORT (default 5000) for the imported store; Ctrl-C stops it
+	@test -f $(MLFLOW_DIR)/mlflow.db || { echo "no store yet: run make mlflow-import first" >&2; exit 1; }
+	$(MLFLOW_ENV) $(MLFLOW_VENV)/bin/mlflow server --backend-store-uri sqlite:///$(MLFLOW_DIR)/mlflow.db \
+		--artifacts-destination $(MLFLOW_DIR)/mlartifacts --host 127.0.0.1 --port $(MLFLOW_PORT) --workers 1
 
 tf-plan: ## Terraform plan for GKE (not yet implemented: P1-IAC-04)
 	@echo "not yet implemented: P1-IAC-04" >&2; exit 1

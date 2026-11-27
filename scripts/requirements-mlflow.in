@@ -1,0 +1,4 @@
+# Local MLflow store for the imported training run history (scripts/mlflow_import.py, make mlflow-import / mlflow-ui).
+# Its own venv in artifacts/mlflow/.venv, separate from the serving venv and the API image.
+# Compile: uv pip compile scripts/requirements-mlflow.in -o scripts/requirements-mlflow.txt --python-version 3.12
+mlflow==3.18.0
