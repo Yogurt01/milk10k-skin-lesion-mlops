@@ -76,7 +76,7 @@ Green and solid: running now. Dashed: planned (cloud). The detailed diagrams (ev
 ├── tests/                PyTest suite for the serving code (unit, API, parity)
 ├── monitoring/           Prometheus (scrape config, alert rules), Grafana (provisioned dashboard), Jaeger configuration
 ├── ci/                   Jenkins in its own Compose project, configured as code (plugins, JCasC, job)
-├── scripts/              model download and check, smoke test, repository hygiene check
+├── scripts/              model download and check, smoke test, repository hygiene check, MLflow history import
 ├── benchmarks/           the scripts behind the serving measurements
 ├── docs/                 architecture, install guide, serving measurements, full parity report
 ├── k8s/                  Helm chart for the API on a local Kubernetes cluster (minikube), Prometheus + Grafana
@@ -105,6 +105,15 @@ The four stages of the notebook requirement:
 The notebooks are stored with their outputs, so they can be read on GitHub without running them. Running them needs
 the MILK10k data and the checkpoints ([training/README.md](training/README.md#quick-start),
 [notebooks/README.md](notebooks/README.md)).
+
+**Run history in MLflow (optional, local only).** The training runs were not tracked with MLflow while they ran.
+Afterwards, [`scripts/mlflow_import.py`](scripts/mlflow_import.py) imports their recorded history (the 37 runs of
+[`experiments_scores.csv`](training/results/experiments_scores.csv), the per-epoch curves of the 15 fold runs, the
+final config and metrics) into a local SQLite store. Release 1.0.0 is registered as a model version whose source is
+the [GitHub Release](https://github.com/Yogurt01/milk10k-skin-lesion-mlops/releases/tag/model-v1.0.0) (catalogue
+entry only, no model files in the store). `make mlflow-import` creates its own venv and the store in
+`artifacts/mlflow/` (gitignored; a second run adds nothing), and `make mlflow-ui` opens the UI on `127.0.0.1:5000`
+until Ctrl-C. Nothing runs in the background, and the stack, Jenkins and Kubernetes do not use it.
 
 ## Install and run on Ubuntu
 
