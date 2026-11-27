@@ -16,7 +16,19 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if eq $tag "latest" -}}
 {{- fail "image.tag must not be latest" -}}
 {{- end -}}
-{{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- $repository := required "image.repository is required" .Values.image.repository -}}
+{{- printf "%s:%s" $repository $tag -}}
+{{- end -}}
+
+{{/* Image of the fetch-model init container (model.source gcs), always pinned by digest. */}}
+{{- define "milk10k-api.fetchImage" -}}
+{{- $i := .Values.model.gcs.image -}}
+{{- $digest := required "model.gcs.image.digest is required (pin the image by digest)" $i.digest -}}
+{{- printf "%s:%s@%s" (required "model.gcs.image.repository is required" $i.repository) (required "model.gcs.image.tag is required" $i.tag) $digest -}}
+{{- end -}}
+
+{{- define "milk10k-api.serviceAccountName" -}}
+{{- .Values.serviceAccount.name | default .Release.Name -}}
 {{- end -}}
 
 {{- define "milk10k-api.securityContext" -}}

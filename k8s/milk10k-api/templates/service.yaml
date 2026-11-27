@@ -7,6 +7,20 @@ metadata:
     {{- include "milk10k-api.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
+  {{- if eq .Values.service.type "LoadBalancer" }}
+  {{- /* Never a load balancer open to the whole internet: only the listed client networks are let through. */}}
+  {{- $ranges := .Values.service.loadBalancerSourceRanges | default list }}
+  {{- if not $ranges }}
+  {{- fail "service.type LoadBalancer needs service.loadBalancerSourceRanges (e.g. your IP as x.x.x.x/32)" }}
+  {{- end }}
+  {{- range $ranges }}
+  {{- if or (eq . "0.0.0.0/0") (eq . "::/0") }}
+  {{- fail "service.loadBalancerSourceRanges must not contain 0.0.0.0/0 or ::/0" }}
+  {{- end }}
+  {{- end }}
+  loadBalancerSourceRanges:
+    {{- toYaml $ranges | nindent 4 }}
+  {{- end }}
   selector:
     {{- include "milk10k-api.selectorLabels" . | nindent 4 }}
   ports:

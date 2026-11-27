@@ -1,5 +1,9 @@
-{{- if ne .Values.model.source "hostPath" }}
-{{- fail (printf "model.source %q is not implemented; use hostPath" .Values.model.source) }}
+{{- $gcs := eq .Values.model.source "gcs" }}
+{{- if not (or $gcs (eq .Values.model.source "hostPath")) }}
+{{- fail (printf "model.source %q is not implemented; use hostPath or gcs" .Values.model.source) }}
+{{- end }}
+{{- if and $gcs (not .Values.serviceAccount.create) }}
+{{- fail "model.source gcs reads the bucket with Workload Identity: set serviceAccount.create=true" }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -25,6 +29,11 @@ spec:
     spec:
       # The API never talks to the Kubernetes API.
       automountServiceAccountToken: false
+      {{- if .Values.serviceAccount.create }}
+      # Its own ServiceAccount: the identity Workload Identity maps to bucket read access (no token is mounted; the
+      # GKE metadata server answers the init container's credential requests).
+      serviceAccountName: {{ include "milk10k-api.serviceAccountName" . }}
+      {{- end }}
       enableServiceLinks: false
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
@@ -33,8 +42,43 @@ spec:
         runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
-      {{- if .Values.model.verifyInInitContainer }}
+      {{- if or $gcs .Values.model.verifyInInitContainer }}
       initContainers:
+        {{- if $gcs }}
+        # Copies the package from the private bucket into the Pod's own volume. Credentials come from Workload
+        # Identity (no key file); verify-model then checks every sha256 before the API starts.
+        - name: fetch-model
+          image: {{ include "milk10k-api.fetchImage" . }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - gcloud
+            - storage
+            - cp
+            - --recursive
+            - {{ printf "gs://%s/%s/*" (required "model.gcs.bucket is required when model.source is gcs" .Values.model.gcs.bucket) .Values.model.gcs.prefix | quote }}
+            - {{ .Values.model.mountPath | quote }}
+          env:
+            - name: CLOUDSDK_CONFIG
+              value: /gcloud
+            - name: CLOUDSDK_CORE_DISABLE_PROMPTS
+              value: "1"
+            - name: CLOUDSDK_CORE_DISABLE_USAGE_REPORTING
+              value: "true"
+            - name: CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK
+              value: "true"
+          securityContext:
+            {{- include "milk10k-api.securityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.model.gcs.resources | nindent 12 }}
+          volumeMounts:
+            - name: model
+              mountPath: {{ .Values.model.mountPath }}
+            - name: gcloud-config
+              mountPath: /gcloud
+            - name: tmp
+              mountPath: /tmp
+        {{- end }}
+        {{- if .Values.model.verifyInInitContainer }}
         - name: verify-model
           image: {{ include "milk10k-api.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -64,6 +108,7 @@ spec:
             - name: model
               mountPath: {{ .Values.model.mountPath }}
               readOnly: true
+        {{- end }}
       {{- end }}
       containers:
         - name: api
@@ -117,9 +162,22 @@ spec:
               mountPath: /tmp
       volumes:
         - name: model
+          {{- if $gcs }}
+          # The Pod's own copy (~1.4 GB) on the node's disk, removed with the Pod.
+          emptyDir:
+            sizeLimit: {{ .Values.model.gcs.sizeLimit }}
+          {{- else }}
           hostPath:
             path: {{ .Values.model.hostPath }}
             type: Directory
+          {{- end }}
         - name: tmp
           emptyDir:
             sizeLimit: {{ .Values.tmpSizeLimit }}
+        {{- if $gcs }}
+        # gcloud's configuration and token cache, seen by fetch-model only.
+        - name: gcloud-config
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        {{- end }}

@@ -10,11 +10,29 @@ image:
   pullPolicy: IfNotPresent
 
 # Where the model package (~1.4 GB, CC BY-NC 4.0, non-commercial) comes from. It is never part of the image.
-# hostPath: a folder that already exists on the node (local clusters). Other sources are not implemented yet.
+# hostPath: a folder that already exists on the node (local clusters).
+# gcs: an init container copies the package from a private Cloud Storage bucket into the Pod's own emptyDir with
+# Workload Identity (GKE, k8s/values-gke.yaml); needs serviceAccount.create=true.
 model:
   source: hostPath
   hostPath: /mnt/milk10k-model/final-P1a-kg-onnx
   mountPath: /models/final-P1a-kg-onnx
+  gcs:
+    bucket: ""                      # set at deploy time (Terraform output model_bucket)
+    prefix: final-P1a-kg-onnx       # gs://<bucket>/<prefix>/manifest.json, ...
+    sizeLimit: 2Gi
+    # Official Google Cloud CLI image, the same gcloud version as in the install guide, pinned by digest.
+    image:
+      repository: gcr.io/google.com/cloudsdktool/google-cloud-cli
+      tag: 593.0.0-alpine
+      digest: sha256:269c3ae5175a900ea6be98322dcc65d4cb1499ec9f8f262d19bbd128c6a898c8
+    resources:
+      requests:
+        cpu: 500m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
   # An init container checks every file against the sha256 in manifest.json and logs the result before the API
   # starts; a mismatch keeps the Pod in Init:Error and it never receives traffic.
   verifyInInitContainer: true
@@ -88,6 +106,14 @@ tmpSizeLimit: 256Mi
 service:
   type: ClusterIP
   port: 8000
+  # Required for type LoadBalancer (the template refuses an empty list and 0.0.0.0/0).
+  loadBalancerSourceRanges: []
+
+# Own ServiceAccount for the Pods (needed for Workload Identity on GKE). Off: the Pods use the namespace's default
+# ServiceAccount, as before. name "" = the release name.
+serviceAccount:
+  create: false
+  name: ""
 
 # Prometheus Operator ServiceMonitor (templates/servicemonitor.yaml): one scrape target per API Pod, every 15 s as in
 # the Compose stack. Created only when enabled AND the ServiceMonitor CRD exists in the cluster (kube-prometheus-stack
