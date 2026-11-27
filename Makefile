@@ -29,8 +29,12 @@ MLFLOW_PORT ?= 5000
 MLFLOW_VENV = $(MLFLOW_DIR)/.venv
 MLFLOW_ENV = MLFLOW_DISABLE_TELEMETRY=true DO_NOT_TRACK=true MLFLOW_DISABLE_AGENT_HINT=1
 KPS_RELEASE = kps
+# GKE test (deploy/README.md): Terraform without version-check calls, and the helper behind the gke-* targets
+TF_DIR := deploy/terraform
+TF = CHECKPOINT_DISABLE=1 terraform -chdir=$(TF_DIR)
+GKE = scripts/gke.sh
 
-.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-kubeconfig ci-down k8s-deploy k8s-grafana-secret k8s-monitoring k8s-rules k8s-stop mlflow-import mlflow-ui tf-plan
+.PHONY: help setup setup-notebooks test test-all test-report test-container smoke sample lint format hygiene serve fetch-model env export bench up down ci-secrets ci-up ci-kubeconfig ci-down k8s-deploy k8s-grafana-secret k8s-monitoring k8s-rules k8s-stop mlflow-import mlflow-ui tf-check tf-init tf-plan tf-apply gke-render gke-preflight gke-credentials gke-registry-login gke-push gke-model-upload gke-monitoring gke-deploy gke-test gke-expose gke-unexpose gke-down gke-leftovers
 
 help: ## List the targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -157,5 +161,59 @@ mlflow-ui: $(MLFLOW_VENV)/.installed ## MLflow UI on 127.0.0.1:MLFLOW_PORT (defa
 	$(MLFLOW_ENV) $(MLFLOW_VENV)/bin/mlflow server --backend-store-uri sqlite:///$(MLFLOW_DIR)/mlflow.db \
 		--artifacts-destination $(MLFLOW_DIR)/mlartifacts --host 127.0.0.1 --port $(MLFLOW_PORT) --workers 1
 
-tf-plan: ## Terraform plan for GKE (not yet implemented: P1-IAC-04)
-	@echo "not yet implemented: P1-IAC-04" >&2; exit 1
+# --- GKE test (deploy/README.md): Terraform in deploy/terraform (local state, gitignored) + scripts/gke.sh ---
+# Only tf-check and gke-render work offline; every other target talks to the Google Cloud project.
+tf-check: ## Offline: terraform fmt -check, init -backend=false, validate, tflint (no cloud account, no state)
+	$(TF) fmt -check -recursive
+	$(TF) init -backend=false -input=false
+	$(TF) validate
+	@if command -v tflint >/dev/null; then tflint --chdir=$(TF_DIR) --init && tflint --chdir=$(TF_DIR) --format compact; \
+		else echo "tflint not installed: skipped"; fi
+
+tf-init: ## Terraform init with the local state backend (needs terraform.tfvars only later, for plan)
+	$(TF) init -input=false
+
+tf-plan: ## Terraform plan into deploy/terraform/milk10k.tfplan (gitignored); costs nothing, needs the account
+	$(TF) plan -input=false -out=milk10k.tfplan
+
+tf-apply: ## Apply the saved plan (creates billable resources: see deploy/README.md "Cost")
+	$(TF) apply -input=false milk10k.tfplan
+
+gke-render: ## Offline: render the chart with the GKE values and placeholders, schema check with kubeconform
+	$(GKE) render
+
+gke-preflight: ## Local checks before anything billable (tools, gcloud configuration, terraform.tfvars mode 600)
+	$(GKE) preflight
+
+gke-credentials: ## Kubeconfig entry for the cluster as context milk10k-gke
+	$(GKE) credentials
+
+gke-registry-login: ## Docker credential helper for the Artifact Registry host (no key file)
+	$(GKE) registry-login
+
+gke-push: ## Push milk10k-api:TAG to Artifact Registry: make gke-push TAG=<image tag>
+	$(GKE) push $(TAG)
+
+gke-model-upload: ## Verify the local model package, then copy it to the private bucket
+	$(GKE) upload-model
+
+gke-monitoring: ## kube-prometheus-stack (local values + GKE overlay), Grafana Secret, dashboard and rules on GKE
+	KPS_CHART=$(KPS_CHART) $(GKE) monitoring
+
+gke-deploy: ## Deploy the API to GKE: make gke-deploy TAG=<image tag> [REPLICAS=n]
+	REPLICAS=$(REPLICAS) $(GKE) deploy $(TAG)
+
+gke-test: ## Smoke test (+ sample-lesion parity if present) through a port-forward to the GKE Service
+	$(GKE) test
+
+gke-expose: ## LoadBalancer reachable only from CIDR, then curl /health: make gke-expose CIDR=<your IP>/32
+	$(GKE) expose $(CIDR)
+
+gke-unexpose: ## Back to ClusterIP (removes the load balancer)
+	$(GKE) unexpose
+
+gke-down: ## Teardown: uninstall releases, wait for the load balancer to go, terraform destroy, leftover check
+	$(GKE) down
+
+gke-leftovers: ## List billable resources left in the project (works without the state: GKE_PROJECT=<id>)
+	$(GKE) leftovers

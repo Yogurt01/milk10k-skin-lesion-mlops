@@ -1,0 +1,47 @@
+# Values for the GKE test cluster (deploy/README.md), used on top of the chart defaults only (never together with
+# values-local.yaml or values-ci.yaml). Nothing project-specific is in this file: the registry path and the bucket
+# name come from the Terraform outputs at deploy time (scripts/gke.sh deploy).
+#
+# Sized for a Free Trial project (8 vCPU: 2 x e2-standard-4). With the chart's 3 CPU per Pod, 3 replicas would need
+# 9 vCPU, so each Pod requests 1.5 CPU and runs 2 ONNX Runtime threads (estimated ~1.0 s per lesion from the
+# 2-thread member timing in docs/serving_measurements.md; to be measured on GKE).
+
+image:
+  repository: ""        # set at deploy time: <region>-docker.pkg.dev/<project>/milk10k/milk10k-api
+  pullPolicy: IfNotPresent
+
+model:
+  source: gcs
+  gcs:
+    bucket: ""          # set at deploy time
+
+serviceAccount:
+  create: true
+
+env:
+  ORT_INTRA_OP_THREADS: "2"
+  MAX_CONCURRENT_PREDICTIONS: "1"
+  MAX_QUEUED_PREDICTIONS: "8"
+
+# Memory as measured locally (peak 2,113 MiB). Ephemeral storage covers the Pod's 1.4 GB model copy (emptyDir) and
+# /tmp; above the limit the kubelet would evict the Pod.
+resources:
+  requests:
+    cpu: 1500m
+    memory: 2560Mi
+    ephemeral-storage: 2Gi
+  limits:
+    cpu: "2"
+    memory: 2560Mi
+    ephemeral-storage: 3Gi
+
+# Copying 1.4 GB from the bucket and checking every sha256 takes longer than reading a local folder.
+probes:
+  startup:
+    failureThreshold: 150
+
+# kube-prometheus-stack release "kps" on the cluster (make gke-monitoring).
+serviceMonitor:
+  enabled: true
+  labels:
+    release: kps

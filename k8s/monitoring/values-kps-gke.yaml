@@ -1,0 +1,8 @@
+# Extra values for kube-prometheus-stack on the GKE test cluster, used together with the local values file
+# (values-kube-prometheus-stack.yaml): helm ... -f values-kube-prometheus-stack.yaml -f values-kps-gke.yaml.
+# Only what differs on GKE Standard; everything else (lean footprint, no Alertmanager, Grafana login from the Secret)
+# is the same as on minikube.
+
+# GKE runs kube-dns, not CoreDNS: the chart's CoreDNS target (port 9153) would not exist and stay down.
+coreDns:
+  enabled: false
