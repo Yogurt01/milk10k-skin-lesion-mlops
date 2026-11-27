@@ -57,6 +57,7 @@ FORBIDDEN = [  # (glob on the repo-relative path or the file name, reason)
     ("*.tfstate", "Terraform state"),
     ("*.tfstate.*", "Terraform state"),
     ("*.tfvars", "Terraform variables"),
+    ("*.tfvars.json", "Terraform variables"),
 ]
 ALLOWED = {".env.example"}
 

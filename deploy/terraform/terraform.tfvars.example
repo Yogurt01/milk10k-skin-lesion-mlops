@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Never commit the real file.
+#   cp terraform.tfvars.example terraform.tfvars && chmod 600 terraform.tfvars
+
+project_id      = "your-project-id"
+billing_account = "000000-000000-000000"
+
+# Your public IPv4 address with /32 (control plane access; the same value is used for the API's LoadBalancer).
+admin_cidrs = ["203.0.113.10/32"]
+
+# Budget in the billing account's currency (Billing > Account management shows it).
+budget_amount = 20
+# budget_currency = "USD"
+
+# Defaults (change only with a reason, see deploy/README.md "Cost"):
+# region            = "us-central1"
+# zone              = "us-central1-a"
+# node_machine_type = "e2-standard-4"
+# node_count        = 2
+# node_disk_size_gb = 50

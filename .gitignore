@@ -85,6 +85,7 @@ jenkins_home/
 *.tfstate
 *.tfstate.*
 *.tfvars
+*.tfvars.json
 *.tfplan
 crash.log
 
